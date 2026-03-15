@@ -1,6 +1,11 @@
 pipeline {
     agent any
 
+    // Kéo tool đã cấu hình trên Jenkins vào sử dụng
+    tools {
+        maven 'maven-3.9' 
+    }
+
     environment {
         // Tạm thời cố định service product để test Yêu cầu 5
         SERVICE_NAME = 'product'
