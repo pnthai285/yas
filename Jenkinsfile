@@ -1,123 +1,165 @@
 pipeline {
-    // Jenkins có thể chạy pipeline trên bất kỳ agent nào
+
+    /*
+    agent any:
+    Jenkins có thể chạy pipeline trên bất kỳ node/agent nào available
+    */
     agent any
 
-    // Khai báo tool được cấu hình trong Jenkins Global Tool Configuration
+
+    /*
+    tools:
+    Khai báo các tool Jenkins đã cấu hình trong Global Tool Configuration
+    Jenkins sẽ tự add chúng vào PATH khi pipeline chạy
+    */
     tools {
-        // Maven dùng để build project
-        maven 'maven-3.9'
-
-        // JDK dùng để compile và chạy test
-        jdk 'jdk-25'
+        maven 'maven-3.9'   // Maven version đã cài trong Jenkins
+        jdk 'jdk-25'        // JDK đã cài trong Jenkins
     }
 
+
+    /*
+    environment:
+    Khai báo biến môi trường dùng chung cho toàn pipeline
+    */
     environment {
-        // Service cần test (ví dụ product)
-        SERVICE_NAME = 'product'
 
-        // Thư viện dùng chung của toàn hệ thống
-        COMMON_LIBRARY = 'common-library'
+        /*
+        SERVICE_NAME:
+        service sẽ được build/test
+        Ở requirement 5 ta chỉ cần test 1 service
+        ví dụ: product
+        */
+        SERVICE_NAME = 'product'
     }
+
+
 
     stages {
 
-        // =========================================================
-        // 1. Checkout source code từ Git
-        // =========================================================
+        /*
+        ========================
+        Stage 1: Checkout Source
+        ========================
+        */
         stage('Checkout') {
+
             steps {
-                // Lấy code của branch hiện tại
+
+                /*
+                checkout scm:
+                Jenkins clone source code từ GitHub repo
+                branch được trigger pipeline
+                */
                 checkout scm
             }
         }
 
-        // =========================================================
-        // 2. Install parent pom
-        // =========================================================
-        stage('Install Parent POM') {
-            steps {
-                // Repo YAS có root pom (artifactId = yas)
-                // Các service con (product, cart...) đều kế thừa từ parent này
-                //
-                // Nếu không install parent pom vào local .m2
-                // Maven sẽ cố download từ Maven Central → build fail
-                //
-                // -N = non-recursive (chỉ build pom root)
-                sh 'mvn -N install'
-            }
-        }
 
-        // =========================================================
-        // 3. Build common library
-        // =========================================================
-        stage('Build Common Library') {
-            steps {
 
-                // Chuyển vào thư mục common-library
-                dir("${COMMON_LIBRARY}") {
+        /*
+        ========================
+        Stage 2: Test + Coverage
+        ========================
 
-                    // Build và install thư viện vào local Maven repository
-                    // để các service khác có thể sử dụng
-                    //
-                    // -DskipTests để tiết kiệm thời gian CI
-                    sh 'mvn clean install -DskipTests'
-                }
-            }
-        }
-
-        // =========================================================
-        // 4. Test & Code Coverage
-        // =========================================================
+        Phase test của requirement 5
+        */
         stage('Test & Coverage') {
+
             steps {
 
-                // Chạy test cho service cần build
-                dir("${SERVICE_NAME}") {
+                /*
+                mvn command explanation
 
-                    // verify sẽ chạy:
-                    // - compile
-                    // - unit test
-                    // - integration test
-                    // - generate JaCoCo coverage report
-                    sh 'mvn clean verify'
-                }
+                -pl ${SERVICE_NAME}
+                build module cụ thể (product)
+
+                -am
+                build luôn các module dependency
+                ví dụ:
+                product -> depends -> common-library
+
+                clean
+                xóa build cũ
+
+                verify
+                chạy:
+                - compile
+                - unit test
+                - integration test
+                - jacoco coverage
+                */
+                sh """
+                mvn -pl ${SERVICE_NAME} -am clean verify
+                """
             }
 
+
+            /*
+            post section:
+            chạy sau khi stage kết thúc
+            */
             post {
+
                 always {
 
-                    // -------------------------------------------------
-                    // Upload Test Results lên Jenkins
-                    // -------------------------------------------------
-                    // Jenkins sẽ đọc file XML từ Surefire/Failsafe
-                    junit '**/target/surefire-reports/*.xml, **/target/failsafe-reports/*.xml'
+                    /*
+                    junit step:
+                    upload test result lên Jenkins UI
 
-                    // -------------------------------------------------
-                    // Upload Code Coverage (JaCoCo)
-                    // -------------------------------------------------
-                    // Plugin "Coverage" sẽ hiển thị % coverage trên Jenkins UI
+                    Jenkins sẽ đọc các file XML được
+                    Maven Surefire/Failsafe tạo ra
+                    */
+                    junit(
+                        allowEmptyResults: true,
+                        testResults: '**/target/surefire-reports/*.xml, **/target/failsafe-reports/*.xml'
+                    )
+
+
+                    /*
+                    recordCoverage:
+                    upload code coverage từ JaCoCo
+
+                    file coverage được tạo tại:
+                    target/site/jacoco/jacoco.xml
+                    */
                     recordCoverage(
                         tools: [
-                            [tool: 'jacoco', pattern: '**/target/site/jacoco/jacoco.xml']
+                            [
+                                parser: 'JACOCO',
+                                pattern: '**/target/site/jacoco/jacoco.xml'
+                            ]
                         ]
                     )
                 }
             }
         }
 
-        // =========================================================
-        // 5. Build Artifact
-        // =========================================================
+
+
+        /*
+        ========================
+        Stage 3: Build Artifact
+        ========================
+
+        Phase build của requirement 5
+        */
         stage('Build Artifact') {
+
             steps {
 
-                dir("${SERVICE_NAME}") {
+                /*
+                mvn package:
+                build jar artifact
 
-                    // Build file jar của service
-                    // -DskipTests vì test đã chạy ở stage trước
-                    sh 'mvn clean package -DskipTests'
-                }
+                -DskipTests:
+                skip test vì test đã chạy ở stage trước
+                */
+                sh """
+                mvn -pl ${SERVICE_NAME} -am clean package -DskipTests
+                """
             }
         }
+
     }
 }
