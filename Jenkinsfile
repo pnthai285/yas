@@ -4,6 +4,7 @@ pipeline {
     // Khai báo công cụ Maven đã cài trên Jenkins
     tools {
         maven 'maven-3.9'
+        jdk 'jdk-25'
     }
 
     environment {
