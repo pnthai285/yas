@@ -58,11 +58,13 @@ def runBackendService(String service) {
         def localRepo = "${env.WORKSPACE}/.m2-repo-${service}"
         sh "mkdir -p ${localRepo} && cp -al ${env.WORKSPACE}/.m2-cache/. ${localRepo}/ || true"
         
-        // 3.1 Snyk scan (dùng CLI đã cài sẵn trên jenkins agent)
+        // 3.1 Snyk scan (dùng CLI đã cài sẵn, sửa lỗi auth)
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
             sh """
-                snyk auth \$SNYK_TOKEN
-                snyk test --file=${service}/pom.xml --severity-threshold=high --maven-aggregate-project || true
+                snyk test --file=${service}/pom.xml \
+                    --severity-threshold=high \
+                    --maven-aggregate-project \
+                    --token=\$SNYK_TOKEN || true
             """
         }
         
@@ -139,11 +141,12 @@ def runFrontendService(String service) {
         }
         timeout(time: 5, unit: 'MINUTES') { waitForQualityGate abortPipeline: true }
         
-        // Snyk scan frontend
+        // Snyk scan frontend (sửa lỗi auth)
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
             sh """
-                snyk auth \$SNYK_TOKEN
-                snyk test --file=${service}/package.json --severity-threshold=high || true
+                snyk test --file=package.json \
+                    --severity-threshold=high \
+                    --token=\$SNYK_TOKEN || true
             """
         }
         
@@ -159,7 +162,9 @@ node('jenkins-agent') {
     // Cấu hình môi trường
     env.MIN_COVERAGE = '70'
     env.SONAR_BASE_KEY = 'my-yas'
-    env.SONAR_HOST_URL = 'http://52.63.126.57:9000'   
+    // env.SONAR_HOST_URL đã được định nghĩa trong cấu hình SonarQube server của Jenkins
+    // Nếu muốn ghi đè, có thể set lại:
+    // env.SONAR_HOST_URL = 'http://52.63.126.57:9000'  
     
     try {
         stage('Checkout Code') { checkout scm }
