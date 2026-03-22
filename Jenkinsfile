@@ -85,17 +85,16 @@ def runBackendService(String service) {
         withSonarQubeEnv('SonarQube') {
             def sonarParams = "-Dsonar.projectKey=${env.SONAR_BASE_KEY}-${service} -Dsonar.projectName=YAS-${service}"
             sonarParams += " -Dsonar.coverage.jacoco.xmlReportPaths=${service}/target/site/jacoco/jacoco.xml"
-            
+        
             if (env.CHANGE_ID) {
-                // Nếu là nhánh Pull Request
-                sonarParams += " -Dsonar.pullrequest.key=${env.CHANGE_ID}"
-                sonarParams += " -Dsonar.pullrequest.branch=${env.CHANGE_BRANCH}"
-                sonarParams += " -Dsonar.pullrequest.base=${env.CHANGE_TARGET}"
-            } else if (env.BRANCH_NAME) {
-                // Nếu là nhánh thường (main, develop, v.v.)
+                // Đây là build của Pull Request
+                sonarParams += " -Dsonar.branch.name=${env.CHANGE_BRANCH}"
+                sonarParams += " -Dsonar.branch.target=${env.CHANGE_TARGET}"
+            } else {
+                // Build nhánh thường (main, develop, ...)
                 sonarParams += " -Dsonar.branch.name=${env.BRANCH_NAME}"
             }
-
+        
             sh "mvn sonar:sonar -pl ${service} -am -B ${sonarParams} -Dmaven.repo.local=${localRepo}"
         }
         
@@ -127,24 +126,24 @@ def runFrontendService(String service) {
         
         // SonarQube cho frontend (Kích hoạt PR Analysis)
         withSonarQubeEnv('SonarQube') {
-            def scannerHome = tool name: 'SonarScanner' // Cần cấu hình SonarScanner trong Global Tool Configuration
-            
+            def scannerHome = tool name: 'SonarScanner' // Đảm bảo đã cấu hình SonarScanner trong Jenkins
+        
             def sonarParams = "-Dsonar.projectKey=${env.SONAR_BASE_KEY}-${service} " +
                               "-Dsonar.projectName=YAS-${service} " +
                               "-Dsonar.sources=${service}/src " +
                               "-Dsonar.javascript.lcov.reportPaths=${service}/coverage/lcov.info " +
                               "-Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**"
-            
+        
             if (env.CHANGE_ID) {
-                sonarParams += " -Dsonar.pullrequest.key=${env.CHANGE_ID}"
-                sonarParams += " -Dsonar.pullrequest.branch=${env.CHANGE_BRANCH}"
-                sonarParams += " -Dsonar.pullrequest.base=${env.CHANGE_TARGET}"
-            } else if (env.BRANCH_NAME) {
+                sonarParams += " -Dsonar.branch.name=${env.CHANGE_BRANCH}"
+                sonarParams += " -Dsonar.branch.target=${env.CHANGE_TARGET}"
+            } else {
                 sonarParams += " -Dsonar.branch.name=${env.BRANCH_NAME}"
             }
-
+        
             sh "${scannerHome}/bin/sonar-scanner ${sonarParams}"
         }
+        
         timeout(time: 5, unit: 'MINUTES') { waitForQualityGate abortPipeline: true }
         
         // Snyk scan frontend
