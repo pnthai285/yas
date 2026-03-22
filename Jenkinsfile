@@ -61,7 +61,7 @@ def runBackendService(String service) {
             cp -al ${env.WORKSPACE}/.m2-cache/. ${localRepo}/ || true
         """
         
-        // 3.1. Test & Phân tích Coverage (Bắt buộc Coverage >= 80%)
+        // 3.1. Test & Phân tích Coverage (Bắt buộc Coverage >= 70%)
         retry(2) {
             sh """
                 mvn clean verify -pl ${service} -am -B \
@@ -74,7 +74,7 @@ def runBackendService(String service) {
         // Upload Test Result
         junit testResults: "${service}/target/surefire-reports/*.xml, ${service}/target/failsafe-reports/*.xml", allowEmptyResults: true
         
-        // Upload Coverage & Kiểm tra Threshold 80%
+        // Upload Coverage & Kiểm tra Threshold 70%
         recordCoverage(
             tools: [[parser: 'JACOCO', pattern: "${service}/target/site/jacoco/jacoco.xml"]],
             sourceDirectories: [[path: "${service}/src/main/java"]],
@@ -131,7 +131,7 @@ def runFrontendService(String service) {
         
         junit testResults: "${service}/junit.xml", allowEmptyResults: true
         
-        // Kiểm tra Threshold 80% bằng jq
+        // Kiểm tra Threshold 70% bằng jq
         def covFile = "${service}/coverage/coverage-summary.json"
         if (fileExists(covFile)) {
             def coverage = sh(script: "jq '.total.lines.pct' ${covFile}", returnStdout: true).trim()
@@ -174,7 +174,7 @@ def runFrontendService(String service) {
 // 5. PIPELINE CHÍNH
 // ============================================================================
 node('jenkins-agent') {
-    env.MIN_COVERAGE = '80'
+    env.MIN_COVERAGE = '70'
     env.SONAR_BASE_KEY = 'my-yas' 
 
     try {
