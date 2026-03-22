@@ -2,6 +2,7 @@ package com.yas.customer.service;
 
 import com.yas.commonlibrary.exception.AccessDeniedException;
 import com.yas.commonlibrary.exception.DuplicatedException;
+import com.yas.commonlibrary.exception.ForbiddenException;
 import com.yas.commonlibrary.exception.NotFoundException;
 import com.yas.commonlibrary.exception.WrongEmailFormatException;
 import com.yas.customer.config.KeycloakPropsConfig;
@@ -123,7 +124,7 @@ class CustomerServiceTest {
     }
 
     @Test
-    void testGetCustomers_hasError_throwForbiddenException() {
+    void testGetCustomers_hasError_throwAccessDeniedException() {
 
         when(usersResource.search(any(), anyInt(), anyInt()))
             .thenThrow(new AccessDeniedException(ACCESS_DENIED_MESSAGE));
@@ -132,6 +133,17 @@ class CustomerServiceTest {
             () -> customerService.getCustomers(1));
 
         assertTrue(thrown.getMessage().contains(ACCESS_DENIED_MESSAGE));
+    }
+
+    @Test
+    void testGetCustomers_whenForbiddenFromKeycloak_throwAccessDeniedException() {
+        when(usersResource.search(any(), anyInt(), anyInt()))
+            .thenThrow(new ForbiddenException(ACCESS_DENIED_MESSAGE));
+
+        AccessDeniedException thrown = assertThrows(AccessDeniedException.class,
+            () -> customerService.getCustomers(0));
+
+        assertThat(thrown.getMessage()).contains(ACCESS_DENIED_MESSAGE);
     }
 
     @Test
@@ -314,6 +326,18 @@ class CustomerServiceTest {
             "Doe", "123", "ADMIN");
 
         when(realmResource.users().search(anyString(), anyBoolean()))
+            .thenReturn(Collections.singletonList(mock(UserRepresentation.class)));
+
+        assertThrows(DuplicatedException.class, () -> customerService.create(customerPostVm));
+    }
+
+    @Test
+    void testCreateUser_whenEmailAlreadyExisted_thenThrowDuplicateException() {
+        CustomerPostVm customerPostVm = new CustomerPostVm("user1", "test@gmail.com", "John",
+            "Doe", "123", "ADMIN");
+
+        when(realmResource.users().search(anyString(), anyBoolean())).thenReturn(Collections.emptyList());
+        when(realmResource.users().search(any(), any(), any(), anyString(), any(), any()))
             .thenReturn(Collections.singletonList(mock(UserRepresentation.class)));
 
         assertThrows(DuplicatedException.class, () -> customerService.create(customerPostVm));
