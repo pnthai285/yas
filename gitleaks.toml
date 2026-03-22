@@ -21,5 +21,6 @@ paths = [
   '''realm-export''',
   '''keycloak-yas-realm-import.yaml''',
   '''target''',
-  '''automation-ui/.*'''
+  '''automation-ui/.*''',
+  '''k8s/charts/yas-configuration/values.yaml'''
 ]
