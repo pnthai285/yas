@@ -73,7 +73,7 @@ def runBackendService(String service) {
                 SNYK_TOKEN=\$SNYK_TOKEN snyk test \
                     --file=${service}/pom.xml \
                     --severity-threshold=high \
-                    -- --Dmaven.repo.local=${localRepo}
+                    -- -Dmaven.repo.local=${localRepo}
             """
         }
 
@@ -266,8 +266,8 @@ node('jenkins-agent') {
         // TỐI ƯU HIỆU NĂNG: Xử lý nghẽn cổ chai (Concurrency Control)
         if (!skipBuild && changedBackend.size() > 0) {
             stage('Backend CI (Batched)') {
-                // Chia Backend thành các lô nhỏ (tối đa 3 service 1 lô) để vCPU/RAM của Jenkins không bị treo
-                def batches = changedBackend.collate(3) 
+                // Chia Backend thành các lô nhỏ (tối đa 2 service 1 lô) để vCPU/RAM của Jenkins không bị treo
+                def batches = changedBackend.collate(2) 
                 batches.eachWithIndex { batch, index ->
                     def parallelBackend = [:]
                     batch.each { service ->
