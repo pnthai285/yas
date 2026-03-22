@@ -63,13 +63,17 @@ def runBackendService(String service) {
         def localRepo = "${env.WORKSPACE}/.m2-repo-${service}"
         sh "mkdir -p ${localRepo} && cp -al ${env.WORKSPACE}/.m2-cache/. ${localRepo}/ || true"
         
-        // 3.1. BẢO MẬT: Quét Snyk SCA (Tìm lỗ hổng trong các thư viện pom.xml)
-        // Cách tối ưu: Chuyền SNYK_TOKEN qua biến môi trường (Env) thay vì lệnh 'snyk auth'
-        // -> Tránh hoàn toàn lỗi Deadlock/Xung đột khi các service chạy song song (Parallel)
+        // 3.1. BẢO MẬT: Quét Snyk SCA
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
             dir(service) {
-                def snykOrg = env.SNYK_ORG ? " --org=${env.SNYK_ORG}" : ""
-                sh "SNYK_TOKEN=\$SNYK_TOKEN snyk test --file=pom.xml --severity-threshold=high${snykOrg}"
+                // Thêm "--" để truyền tham số Maven Repo Local vào cho Snyk
+                // Thêm "--org=..." nếu bạn có nhiều tổ chức trên Snyk (tùy chọn)
+                sh """
+                    SNYK_TOKEN=\$SNYK_TOKEN snyk test \
+                        --file=pom.xml \
+                        --severity-threshold=high \
+                        -- --Dmaven.repo.local=${localRepo}
+                """
             }
         }
 
