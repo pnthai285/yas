@@ -48,7 +48,7 @@ pipeline {
     agent { label 'jenkins-agent' } // Use dedicated agent
 
     tools {
-        jdk 'jdk-21'                // JDK 21 (compatible with Spring Boot 3.2)
+        jdk 'jdk-25'                // JDK 21 (compatible with Spring Boot 3.2)
         maven 'maven-3'             // Maven 3.9+
         nodejs 'nodejs-20'          // Node.js 20 for frontend
         snyk 'snyk-cli'             // Snyk CLI tool
