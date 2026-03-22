@@ -210,31 +210,32 @@ node('jenkins-agent') {
             changedBackend.remove('common-library') 
         }
 
-        // BẢO MẬT: Gitleaks (Chặn lộ Passwords/Keys)
-        if (!skipBuild && (changedBackend.size() > 0 || changedFrontend.size() > 0)) {
-            stage('Security: Gitleaks') {
-                // Tối ưu: BỎ cờ --no-git để bắt buộc Gitleaks soi toàn bộ lịch sử Commit (tránh lọt mã độc ẩn dấu)
-                def configFlag = fileExists('.gitleaks.toml') ? "--config .gitleaks.toml" : (fileExists('gitleaks.toml') ? "--config gitleaks.toml" : "")
-                sh "gitleaks detect --source=. --verbose --exit-code=1 ${configFlag}"
-            }
-        }
-
+        // 🛡️ BẢO MẬT: Gitleaks (Smart Scan - Chỉ soi các commit trong Pull Request/Push hiện tại)
         if (!skipBuild && (changedBackend.size() > 0 || changedFrontend.size() > 0)) {
             stage('Security: Gitleaks') {
                 script {
-                    // Xác định file cấu hình (ưu tiên .gitleaks.toml, nếu không thì gitleaks.toml)
                     def configFlag = ""
                     if (fileExists('.gitleaks.toml')) {
                         configFlag = "--config .gitleaks.toml"
                     } else if (fileExists('gitleaks.toml')) {
                         configFlag = "--config gitleaks.toml"
                     }
-                    
+
+                    // Tối ưu: Chỉ quét các commit mới được push lên, bỏ qua lịch sử cũ từ 2022
+                    def logOpts = ""
+                    if (env.CHANGE_TARGET) {
+                        // Nếu là Pull Request: Chỉ quét các commit khác biệt so với nhánh gốc
+                        logOpts = "--log-opts='origin/${env.CHANGE_TARGET}..HEAD'"
+                    } else if (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT) {
+                        // Nếu là nhánh thường: Chỉ quét từ lần build thành công trước đó
+                        logOpts = "--log-opts='${env.GIT_PREVIOUS_SUCCESSFUL_COMMIT}..${env.GIT_COMMIT}'"
+                    }
+
                     // Gitleaks tự động tìm file .gitleaksignore, không cần thêm tham số
                     // --no-git: scan code hiện tại (không scan lịch sử), tăng tốc và tránh false positive từ commit cũ 
                     // hoặc có thể xem xét BỎ cờ --no-git để bắt buộc Gitleaks soi toàn bộ lịch sử Commit (tránh lọt mã độc ẩn dấu)
                     // --verbose: hiển thị chi tiết
-                    sh "gitleaks detect --source=. --no-git --verbose --exit-code=1 ${configFlag}"
+                    sh "gitleaks detect --source=. ${logOpts} --verbose --exit-code=1 ${configFlag}"
                 }
             }
         }
