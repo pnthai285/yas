@@ -2,6 +2,7 @@ package com.yas.cart.service;
 
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
 
 import com.yas.commonlibrary.config.ServiceUrlConfig;
@@ -62,6 +63,41 @@ class ProductServiceTest {
         assertThat(result.get(0).id()).isEqualTo(1);
         assertThat(result.get(1).id()).isEqualTo(2);
         assertThat(result.get(2).id()).isEqualTo(3);
+    }
+
+    @Test
+    void getProductById_WhenNoProducts_ReturnsNull() {
+        ProductService spyService = Mockito.spy(productService);
+        Mockito.doReturn(List.of()).when(spyService).getProducts(List.of(10L));
+
+        ProductThumbnailVm result = spyService.getProductById(10L);
+
+        assertThat(result).isNull();
+    }
+
+    @Test
+    void existsById_ReturnsTrueWhenProductFound() {
+        ProductService spyService = Mockito.spy(productService);
+        ProductThumbnailVm vm = new ProductThumbnailVm(5L, "name", "slug", "url");
+        Mockito.doReturn(List.of(vm)).when(spyService).getProducts(List.of(5L));
+
+        assertThat(spyService.existsById(5L)).isTrue();
+    }
+
+    @Test
+    void existsById_ReturnsFalseWhenProductMissing() {
+        ProductService spyService = Mockito.spy(productService);
+        Mockito.doReturn(List.of()).when(spyService).getProducts(List.of(6L));
+
+        assertThat(spyService.existsById(6L)).isFalse();
+    }
+
+    @Test
+    void handleProductThumbnailFallback_RethrowsException() {
+        RuntimeException failure = new RuntimeException("api-down");
+
+        assertThatThrownBy(() -> productService.handleProductThumbnailFallback(failure))
+            .isSameAs(failure);
     }
 
     private List<ProductThumbnailVm> getProductThumbnailVms() {
