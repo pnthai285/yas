@@ -14,31 +14,64 @@ def changedFrontend = []
 def skipBuild = false
 
 // ============================================================================
-// 2. HÀM PHÁT HIỆN THAY ĐỔI (TRẢ VỀ LIST)
+// 2. HÀM PHÁT HIỆN THAY ĐỔI 
 // ============================================================================
 def getChangedFiles() {
     def files = [] as List
-    // Method 1: changeSets (Jenkins native)
+
+    // Nếu là Pull Request, so sánh với base branch
+    if (env.CHANGE_TARGET) {
+        echo "🔍 PR detected: comparing with origin/${env.CHANGE_TARGET}"
+        sh "git fetch origin ${env.CHANGE_TARGET}:refs/remotes/origin/${env.CHANGE_TARGET} --no-tags"
+        def raw = sh(script: "git diff --name-only origin/${env.CHANGE_TARGET}...HEAD", returnStdout: true).trim()
+        if (raw) {
+            files.addAll(raw.split('\n') as List)
+            echo "📂 PR changed files (diff): ${files.size()} files"
+        } else {
+            echo "⚠️ No files changed in PR diff."
+        }
+        return files
+    }
+
+    // Không phải PR: dùng changeSets (Jenkins native)
     currentBuild.changeSets.each { changeSet ->
-        changeSet.each { entry -> files.addAll(entry.affectedPaths) }
+        changeSet.each { entry ->
+            files.addAll(entry.affectedPaths)
+        }
     }
-    // Method 2: GIT_PREVIOUS_SUCCESSFUL_COMMIT
-    if (files.isEmpty() && env.GIT_PREVIOUS_SUCCESSFUL_COMMIT) {
+    if (files) {
+        echo "📂 ChangeSets: ${files.size()} files"
+        return files
+    }
+
+    // Fallback 1: GIT_PREVIOUS_SUCCESSFUL_COMMIT
+    if (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT) {
         def raw = sh(script: "git diff --name-only ${env.GIT_PREVIOUS_SUCCESSFUL_COMMIT} ${env.GIT_COMMIT}", returnStdout: true).trim()
-        if (raw) files.addAll(raw.split('\n') as List)
+        if (raw) {
+            files.addAll(raw.split('\n') as List)
+            echo "📂 Previous commit diff: ${files.size()} files"
+            return files
+        }
     }
-    // Method 3: HEAD~1
-    if (files.isEmpty()) {
-        try {
-            def raw = sh(script: 'git diff --name-only HEAD~1 HEAD', returnStdout: true).trim()
-            if (raw) files.addAll(raw.split('\n') as List)
-        } catch (e) { echo "⚠️ No previous commit; will build all." }
+
+    // Fallback 2: HEAD~1
+    try {
+        def raw = sh(script: 'git diff --name-only HEAD~1 HEAD', returnStdout: true).trim()
+        if (raw) {
+            files.addAll(raw.split('\n') as List)
+            echo "📂 HEAD~1 diff: ${files.size()} files"
+            return files
+        }
+    } catch (e) {
+        echo "⚠️ No previous commit (first build?)"
     }
+
+    echo "⚠️ No changes detected, will build all services."
     return files
 }
 
 // ============================================================================
-// 3. HÀM BUILD BACKEND SERVICE
+// 3. HÀM BUILD BACKEND SERVICE (giữ nguyên)
 // ============================================================================
 def runBackendService(String service) {
     node('jenkins-agent') {
@@ -49,7 +82,6 @@ def runBackendService(String service) {
                     mkdir -p ${localRepo}
                     cp -al ${env.WORKSPACE}/.m2-cache/. ${localRepo}/ || true
                 """
-                // Test & Coverage
                 retry(2) {
                     sh """
                         mvn clean verify -pl ${service} -am -B \
@@ -58,10 +90,7 @@ def runBackendService(String service) {
                             -DforkCount=1
                     """
                 }
-                // JUnit results
-                junit testResults: "${service}/target/surefire-reports/*.xml, ${service}/target/failsafe-reports/*.xml",
-                         allowEmptyResults: true
-                // Record coverage (LINE & BRANCH >= MIN_COVERAGE)
+                junit testResults: "${service}/target/surefire-reports/*.xml, ${service}/target/failsafe-reports/*.xml", allowEmptyResults: true
                 recordCoverage(
                     tools: [[parser: 'JACOCO', pattern: "${service}/target/site/jacoco/jacoco.xml"]],
                     sourceDirectories: [[path: "${service}/src/main/java"]],
@@ -70,7 +99,6 @@ def runBackendService(String service) {
                         [threshold: Double.parseDouble(env.MIN_COVERAGE), metric: 'BRANCH', baseline: 'PROJECT', criticality: 'FAILURE']
                     ]
                 )
-                // SonarQube analysis
                 withSonarQubeEnv('SonarQube') {
                     def sonarParams = "-Dsonar.host.url=${env.SONAR_HOST} " +
                                       "-Dsonar.projectKey=${env.SONAR_BASE_KEY}-${service} " +
@@ -84,14 +112,11 @@ def runBackendService(String service) {
                     }
                     sh "mvn sonar:sonar -pl ${service} -am -B ${sonarParams} -Dmaven.repo.local=${localRepo}"
                 }
-                // Wait for SonarQube quality gate
                 timeout(time: 5, unit: 'MINUTES') { waitForQualityGate abortPipeline: true }
-                // Snyk scan (fail on high severity)
                 withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
                     sh "snyk auth \$SNYK_TOKEN"
                     sh "snyk test --file=${service}/pom.xml --severity-threshold=high"
                 }
-                // Package & Docker build
                 sh "mvn package -pl ${service} -am -B -Dmaven.test.skip=true -Dmaven.repo.local=${localRepo}"
                 dir(service) {
                     def dockerTag = "yas-${service}:${BUILD_ID}"
@@ -107,7 +132,7 @@ def runBackendService(String service) {
 }
 
 // ============================================================================
-// 4. HÀM BUILD FRONTEND SERVICE
+// 4. HÀM BUILD FRONTEND SERVICE (giữ nguyên)
 // ============================================================================
 def runFrontendService(String service) {
     node('jenkins-agent') {
@@ -118,9 +143,7 @@ def runFrontendService(String service) {
                     sh 'npm run test -- --coverage --reporters=jest-junit'
                     sh 'npm run build'
                 }
-                // JUnit results
                 junit testResults: "${service}/junit.xml", allowEmptyResults: true
-                // Check coverage threshold
                 def covFile = "${service}/coverage/coverage-summary.json"
                 if (fileExists(covFile)) {
                     def coverage = sh(script: "jq '.total.lines.pct' ${covFile}", returnStdout: true).trim()
@@ -128,7 +151,6 @@ def runFrontendService(String service) {
                         error "❌ Frontend coverage ${coverage}% < ${env.MIN_COVERAGE}%"
                     }
                 }
-                // SonarQube analysis (frontend)
                 withSonarQubeEnv('SonarQube') {
                     def scannerHome = tool name: 'SonarScanner'
                     sh """
@@ -141,12 +163,10 @@ def runFrontendService(String service) {
                     """
                 }
                 timeout(time: 5, unit: 'MINUTES') { waitForQualityGate abortPipeline: true }
-                // Snyk scan
                 withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
                     sh "snyk auth \$SNYK_TOKEN"
                     sh "snyk test --file=package.json --severity-threshold=high"
                 }
-                // Docker build
                 def dockerTag = "yas-${service}:${BUILD_ID}"
                 sh "docker build --build-arg BUILDKIT_INLINE_CACHE=1 -t ${dockerTag} ."
                 if (env.CHANGE_ID == null) {
@@ -161,7 +181,6 @@ def runFrontendService(String service) {
 // 5. PIPELINE CHÍNH
 // ============================================================================
 node('jenkins-agent') {
-    // Thiết lập biến môi trường
     env.MIN_COVERAGE = '70'
     env.SONAR_HOST = 'http://172.31.46.99:9000'   // Thay bằng IP SonarQube server của bạn
     env.SONAR_BASE_KEY = 'my-yas'
@@ -203,13 +222,14 @@ node('jenkins-agent') {
                     }
                 }
 
-                changedBackend.remove('common-library')
+                if (changedBackend.contains('common-library')) {
+                    changedBackend.remove('common-library')
+                }
                 echo "🔍 Backend services to build: ${changedBackend ?: 'none'}"
                 echo "🔍 Frontend services to build: ${changedFrontend ?: 'none'}"
             }
         }
 
-        // Gitleaks scan (sử dụng file .gitleaksignore nếu có)
         if (!skipBuild && (changedBackend.size() > 0 || changedFrontend.size() > 0)) {
             stage('Security: Gitleaks') {
                 script {
@@ -221,7 +241,6 @@ node('jenkins-agent') {
                             chmod +x gitleaks-bin/gitleaks
                         '''
                     }
-                    // Nếu có file .gitleaksignore thì sử dụng
                     if (fileExists('.gitleaksignore')) {
                         sh "${gitleaksPath} detect --source=. --no-git --verbose --exit-code=1 --gitleaks-ignore-path .gitleaksignore"
                     } else {
@@ -229,40 +248,37 @@ node('jenkins-agent') {
                     }
                 }
             }
-        }
 
-        // Pre-build dependencies (root pom & common-library)
-        if (!skipBuild && (changedBackend.size() > 0 || (getChangedFiles().any { it.startsWith('common-library/') }))) {
-            stage('Pre-build Dependencies') {
-                script {
-                    def mavenCache = "${env.WORKSPACE}/.m2-cache"
-                    sh """
-                        mvn install -N -B -Dmaven.test.skip=true -q -Dmaven.repo.local=${mavenCache}
-                        mvn install -pl common-library -am -B -Dmaven.test.skip=true -q -Dmaven.repo.local=${mavenCache}
-                    """
+            if (changedBackend.size() > 0 || (getChangedFiles().any { it.startsWith('common-library/') })) {
+                stage('Pre-build Dependencies') {
+                    script {
+                        def mavenCache = "${env.WORKSPACE}/.m2-cache"
+                        sh """
+                            mvn install -N -B -Dmaven.test.skip=true -q -Dmaven.repo.local=${mavenCache}
+                            mvn install -pl common-library -am -B -Dmaven.test.skip=true -q -Dmaven.repo.local=${mavenCache}
+                        """
+                    }
                 }
             }
-        }
 
-        // Parallel backend builds
-        if (!skipBuild && changedBackend.size() > 0) {
-            stage('Backend CI (Parallel)') {
-                def parallelBackend = [:]
-                changedBackend.each { service ->
-                    parallelBackend[service] = { runBackendService(service) }
+            if (changedBackend.size() > 0) {
+                stage('Backend CI (Parallel)') {
+                    def parallelBackend = [:]
+                    changedBackend.each { service ->
+                        parallelBackend[service] = { runBackendService(service) }
+                    }
+                    parallel parallelBackend
                 }
-                parallel parallelBackend
             }
-        }
 
-        // Parallel frontend builds
-        if (!skipBuild && changedFrontend.size() > 0) {
-            stage('Frontend CI (Parallel)') {
-                def parallelFrontend = [:]
-                changedFrontend.each { service ->
-                    parallelFrontend[service] = { runFrontendService(service) }
+            if (changedFrontend.size() > 0) {
+                stage('Frontend CI (Parallel)') {
+                    def parallelFrontend = [:]
+                    changedFrontend.each { service ->
+                        parallelFrontend[service] = { runFrontendService(service) }
+                    }
+                    parallel parallelFrontend
                 }
-                parallel parallelFrontend
             }
         }
 
