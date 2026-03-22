@@ -133,7 +133,7 @@ def runBackendService(String service) {
             // if (env.CHANGE_ID == null && env.BRANCH_NAME == 'main') {
             //    sh "docker tag ${dockerTag} yas-${service}:latest"
             // }
-        }
+        // }
     }
 }
 
@@ -197,7 +197,7 @@ def runFrontendService(String service) {
            //  if (env.CHANGE_ID == null && env.BRANCH_NAME == 'main') {
             //     sh "docker tag ${dockerTag} yas-${service}:latest"
             // }
-        }
+        //}
     }
 }
 
