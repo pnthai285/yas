@@ -59,33 +59,34 @@ def getChangedFiles() {
 // ============================================================================
 def runBackendService(String service) {
     stage("Backend: ${service}") {
-        // Tối ưu Cache: Copy thư viện Maven từ cache dùng chung vào thư mục riêng của service
+        // --- CHUẨN BỊ MÔI TRƯỜNG ---
+        // Tạo repo Maven riêng cho service để tránh xung đột khi chạy song song (Parallel)
         def localRepo = "${env.WORKSPACE}/.m2-repo-${service}"
         sh "mkdir -p ${localRepo} && cp -al ${env.WORKSPACE}/.m2-cache/. ${localRepo}/ || true"
         
-        // 3.1. BẢO MẬT: Quét Snyk SCA
+        // 3.1. BẢO MẬT: Quét Snyk SCA (Software Composition Analysis)
+        // GIẢI PHÁP CHO LỖI -13: 
+        // 1. Chạy Snyk từ thư mục gốc (không dùng dir(service)) để Snyk nhận diện được cấu trúc Parent/Child POM.
+        // 2. Truyền tham số --Dmaven.repo.local để Snyk dùng chung cache đã chuẩn bị, tránh tải lại gây timeout/treo.
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
-            dir(service) {
-                // Thêm "--" để truyền tham số Maven Repo Local vào cho Snyk
-                // Thêm "--org=..." nếu bạn có nhiều tổ chức trên Snyk (tùy chọn)
-                sh """
-                    SNYK_TOKEN=\$SNYK_TOKEN snyk test \
-                        --file=pom.xml \
-                        --severity-threshold=high \
-                        -- --Dmaven.repo.local=${localRepo}
-                """
-            }
+            sh """
+                SNYK_TOKEN=\$SNYK_TOKEN snyk test \
+                    --file=${service}/pom.xml \
+                    --severity-threshold=high \
+                    -- --Dmaven.repo.local=${localRepo}
+            """
         }
 
-        // 3.2. KIỂM THỬ: Chạy Unit/Integration Test (Tối đa 2 lần thử - retry)
+        // 3.2. KIỂM THỬ: Chạy Unit/Integration Test
+        // Chạy từ gốc với flag -pl (project list) để Maven tự điều phối các dependencies nội bộ
         retry(2) {
             sh "mvn clean verify -pl ${service} -am -B -Dmaven.test.failure.ignore=false -Dmaven.repo.local=${localRepo} -DforkCount=1"
         }
+        
         // Ghi nhận báo cáo test lên giao diện Jenkins
         junit testResults: "${service}/target/surefire-reports/*.xml, ${service}/target/failsafe-reports/*.xml", allowEmptyResults: true
         
-        // 3.3. CHẤT LƯỢNG CODE: Yêu cầu Độ phủ Code (Coverage)
-        // Chỉ kiểm tra LINE (dòng code) phải >= 70% mới cho Pass (Bypass Sandbox bằng số 70.0 tĩnh)
+        // 3.3. CHẤT LƯỢNG CODE: Độ phủ Code (JaCoCo Coverage)
         recordCoverage(
             tools: [[parser: 'JACOCO', pattern: "${service}/target/site/jacoco/jacoco.xml"]],
             sourceDirectories: [[path: "${service}/src/main/java"]],
@@ -94,31 +95,37 @@ def runBackendService(String service) {
             ]
         )
 
-        // 3.4. CHẤT LƯỢNG CODE: Quét SonarQube SAST (Bắt bug, code smell, lỗ hổng nội tại)
+        // 3.4. CHẤT LƯỢNG CODE: Quét SonarQube SAST
         withSonarQubeEnv('SonarQube') {
             def sonarParams = "-Dsonar.projectKey=${env.SONAR_BASE_KEY}-${service} -Dsonar.projectName=YAS-${service}"
-            // Tự động phân loại luồng quét là Pull Request hay Nhánh bình thường
+            
+            // Tự động cấu hình cho Pull Request hoặc Branch
             if (env.CHANGE_ID) {
                 sonarParams += " -Dsonar.pullrequest.key=${env.CHANGE_ID} -Dsonar.pullrequest.branch=${env.CHANGE_BRANCH} -Dsonar.pullrequest.base=${env.CHANGE_TARGET}"
             } else {
                 sonarParams += " -Dsonar.branch.name=${env.BRANCH_NAME}"
             }
+            
+            // Đẩy kèm kết quả JaCoCo lên Sonar để hiển thị biểu đồ Coverage
+            sonarParams += " -Dsonar.coverage.jacoco.xmlReportPaths=${service}/target/site/jacoco/jacoco.xml"
+
             sh "mvn sonar:sonar -pl ${service} -am -B ${sonarParams} -Dmaven.repo.local=${localRepo}"
         }
         
-        // BẮT BUỘC: Quality Gate 
-        // Jenkins sẽ ngồi đợi tối đa 5 phút để nhận đánh giá từ SonarQube (Cần cấu hình Webhook). 
-        // Nếu SonarQube báo lỗi (vd: chứa SQL Injection), Pipeline sập ngay lập tức.
+        // Đợi kết quả trả về từ SonarQube (Quality Gate)
         timeout(time: 5, unit: 'MINUTES') { 
             waitForQualityGate abortPipeline: true 
         }
 
-        // 3.5. ĐÓNG GÓI: Build Docker Image (Chỉ Build và Tag để kiểm tra tính toàn vẹn)
+        // 3.5. ĐÓNG GÓI: Build Docker Image
+        // Build file .jar/.war cuối cùng
         sh "mvn package -pl ${service} -am -B -Dmaven.test.skip=true -Dmaven.repo.local=${localRepo}"
+        
         dir(service) {
             def dockerTag = "yas-${service}:${BUILD_ID}"
             sh "docker build --build-arg BUILDKIT_INLINE_CACHE=1 -t ${dockerTag} ."
-            // Nếu merge vào nhánh main thì gắn tag 'latest'
+            
+            // Nếu merge vào main thì tag latest
             if (env.CHANGE_ID == null && env.BRANCH_NAME == 'main') {
                 sh "docker tag ${dockerTag} yas-${service}:latest"
             }
