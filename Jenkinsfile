@@ -79,8 +79,8 @@ def runBackendService(String service) {
             tools: [[parser: 'JACOCO', pattern: "${service}/target/site/jacoco/jacoco.xml"]],
             sourceDirectories: [[path: "${service}/src/main/java"]],
             qualityGates: [
-                [threshold: Double.parseDouble(env.MIN_COVERAGE), metric: 'LINE', baseline: 'PROJECT', criticality: 'FAILURE'],
-                [threshold: Double.parseDouble(env.MIN_COVERAGE), metric: 'BRANCH', baseline: 'PROJECT', criticality: 'FAILURE']
+                [threshold: env.MIN_COVERAGE.toDouble(), metric: 'LINE', baseline: 'PROJECT', criticality: 'FAILURE'],
+                [threshold: env.MIN_COVERAGE.toDouble(), metric: 'BRANCH', baseline: 'PROJECT', criticality: 'FAILURE']
             ]
         )
 
