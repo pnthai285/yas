@@ -54,7 +54,7 @@ def runBackendService(String service) {
         def localRepo = "${env.WORKSPACE}/.m2-repo-${service}"
         sh "mkdir -p ${localRepo} && cp -al ${env.WORKSPACE}/.m2-cache/. ${localRepo}/ || true"
         
-        // Snyk scan (sửa lỗi auth)
+        // Snyk scan
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
             sh """
                 snyk test --file=${service}/pom.xml \
@@ -72,7 +72,7 @@ def runBackendService(String service) {
         // Publish test results
         junit testResults: "${service}/target/surefire-reports/*.xml, ${service}/target/failsafe-reports/*.xml", allowEmptyResults: true
         
-        // Coverage gate (≥70%)
+        // Coverage gate của Jenkins (≥70%)
         recordCoverage(
             tools: [[parser: 'JACOCO', pattern: "${service}/target/site/jacoco/jacoco.xml"]],
             sourceDirectories: [[path: "${service}/src/main/java"]],
@@ -81,20 +81,26 @@ def runBackendService(String service) {
             ]
         )
         
-        // SonarQube analysis (không dùng pullrequest.* vì Community Edition)
+        // SonarQube analysis (Đã kích hoạt PR Analysis nhờ Plugin)
         withSonarQubeEnv('SonarQube') {
             def sonarParams = "-Dsonar.projectKey=${env.SONAR_BASE_KEY}-${service} -Dsonar.projectName=YAS-${service}"
-            sonarParams += " -Dsonar.branch.name=${env.BRANCH_NAME}"
             sonarParams += " -Dsonar.coverage.jacoco.xmlReportPaths=${service}/target/site/jacoco/jacoco.xml"
+            
+            if (env.CHANGE_ID) {
+                // Nếu là nhánh Pull Request
+                sonarParams += " -Dsonar.pullrequest.key=${env.CHANGE_ID}"
+                sonarParams += " -Dsonar.pullrequest.branch=${env.CHANGE_BRANCH}"
+                sonarParams += " -Dsonar.pullrequest.base=${env.CHANGE_TARGET}"
+            } else if (env.BRANCH_NAME) {
+                // Nếu là nhánh thường (main, develop, v.v.)
+                sonarParams += " -Dsonar.branch.name=${env.BRANCH_NAME}"
+            }
+
             sh "mvn sonar:sonar -pl ${service} -am -B ${sonarParams} -Dmaven.repo.local=${localRepo}"
         }
         
         // Wait for Quality Gate
         timeout(time: 5, unit: 'MINUTES') { waitForQualityGate abortPipeline: true }
-        
-        // Build JAR (optional)
-        // sh "mvn package -pl ${service} -am -B -DskipTests -Dmaven.repo.local=${localRepo}"
-        // dir(service) { sh "docker build -t yas-${service}:${BUILD_ID} ." }
     }
 }
 
@@ -110,6 +116,7 @@ def runFrontendService(String service) {
         }
         junit testResults: "${service}/junit.xml", allowEmptyResults: true
         
+        // Fast-fail coverage check
         def covFile = "${service}/coverage/coverage-summary.json"
         if (fileExists(covFile)) {
             def coverage = sh(script: "jq '.total.lines.pct' ${covFile}", returnStdout: true).trim()
@@ -118,42 +125,47 @@ def runFrontendService(String service) {
             }
         }
         
-        // SonarQube cho frontend (không dùng pullrequest.*)
+        // SonarQube cho frontend (Kích hoạt PR Analysis)
         withSonarQubeEnv('SonarQube') {
-            def scannerHome = tool name: 'SonarScanner'
-            sh """
-                ${scannerHome}/bin/sonar-scanner \
-                    -Dsonar.projectKey=${env.SONAR_BASE_KEY}-${service} \
-                    -Dsonar.projectName=YAS-${service} \
-                    -Dsonar.branch.name=${env.BRANCH_NAME} \
-                    -Dsonar.sources=${service}/src \
-                    -Dsonar.javascript.lcov.reportPaths=${service}/coverage/lcov.info \
-                    -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**
-            """
+            def scannerHome = tool name: 'SonarScanner' // Cần cấu hình SonarScanner trong Global Tool Configuration
+            
+            def sonarParams = "-Dsonar.projectKey=${env.SONAR_BASE_KEY}-${service} " +
+                              "-Dsonar.projectName=YAS-${service} " +
+                              "-Dsonar.sources=${service}/src " +
+                              "-Dsonar.javascript.lcov.reportPaths=${service}/coverage/lcov.info " +
+                              "-Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**"
+            
+            if (env.CHANGE_ID) {
+                sonarParams += " -Dsonar.pullrequest.key=${env.CHANGE_ID}"
+                sonarParams += " -Dsonar.pullrequest.branch=${env.CHANGE_BRANCH}"
+                sonarParams += " -Dsonar.pullrequest.base=${env.CHANGE_TARGET}"
+            } else if (env.BRANCH_NAME) {
+                sonarParams += " -Dsonar.branch.name=${env.BRANCH_NAME}"
+            }
+
+            sh "${scannerHome}/bin/sonar-scanner ${sonarParams}"
         }
         timeout(time: 5, unit: 'MINUTES') { waitForQualityGate abortPipeline: true }
         
         // Snyk scan frontend
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
             sh """
-                snyk test --file=package.json \
+                snyk test --file=${service}/package.json \
                     --severity-threshold=high \
                     --token=\$SNYK_TOKEN || true
             """
         }
-        
-        // Build Docker image (optional)
-        // dir(service) { sh "docker build -t yas-${service}:${BUILD_ID} ." }
     }
 }
 
 // ============================================================================
 // 5. PIPELINE CHÍNH
 // ============================================================================
-node('jenkins-agent') {
+node('jenkins-agent') { // Đảm bảo node này có cài sẵn maven, npm, git, jq
     env.MIN_COVERAGE = '70'
     env.SONAR_BASE_KEY = 'my-yas'
-    // env.SONAR_HOST_URL không cần vì đã cấu hình trong Jenkins SonarQube server
+    // Tối ưu bộ nhớ cho Maven khi chạy parallel, tránh lỗi Killed/OOM
+    env.MAVEN_OPTS = "-Xmx1024m -XX:MaxPermSize=512m" 
     
     try {
         stage('Checkout Code') { checkout scm }
@@ -198,6 +210,7 @@ node('jenkins-agent') {
         if (!skipBuild && (changedBackend || getChangedFiles().any { it.startsWith('common-library/') })) {
             stage('Pre-build Dependencies') {
                 def mavenCache = "${env.WORKSPACE}/.m2-cache"
+                sh "mkdir -p ${mavenCache}"
                 sh "rm -rf common-library/target || true"
                 sh "mvn install -N -B -DskipTests -q -Dmaven.repo.local=${mavenCache}"
                 sh "mvn install -pl common-library -am -B -DskipTests -Dmaven.repo.local=${mavenCache}"
@@ -215,10 +228,10 @@ node('jenkins-agent') {
             }
         }
         
-        // Frontend CI (theo lô)
+        // Frontend CI (theo lô để tránh treo máy)
         if (!skipBuild && changedFrontend) {
             stage('Frontend CI') {
-                def batches = changedFrontend.collate(2)
+                def batches = changedFrontend.collate(2) // Chạy song song 2 services frontend mỗi lượt
                 batches.eachWithIndex { batch, idx ->
                     def parallelTasks = [:]
                     batch.each { svc ->
