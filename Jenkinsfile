@@ -67,7 +67,10 @@ def runBackendService(String service) {
         // Cách tối ưu: Chuyền SNYK_TOKEN qua biến môi trường (Env) thay vì lệnh 'snyk auth'
         // -> Tránh hoàn toàn lỗi Deadlock/Xung đột khi các service chạy song song (Parallel)
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
-            sh "SNYK_TOKEN=\$SNYK_TOKEN snyk test --file=${service}/pom.xml --severity-threshold=high"
+            dir(service) {
+                def snykOrg = env.SNYK_ORG ? " --org=${env.SNYK_ORG}" : ""
+                sh "SNYK_TOKEN=\$SNYK_TOKEN snyk test --file=pom.xml --severity-threshold=high${snykOrg}"
+            }
         }
 
         // 3.2. KIỂM THỬ: Chạy Unit/Integration Test (Tối đa 2 lần thử - retry)
