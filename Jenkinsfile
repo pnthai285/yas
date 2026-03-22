@@ -219,6 +219,26 @@ node('jenkins-agent') {
             }
         }
 
+        if (!skipBuild && (changedBackend.size() > 0 || changedFrontend.size() > 0)) {
+            stage('Security: Gitleaks') {
+                script {
+                    // Xác định file cấu hình (ưu tiên .gitleaks.toml, nếu không thì gitleaks.toml)
+                    def configFlag = ""
+                    if (fileExists('.gitleaks.toml')) {
+                        configFlag = "--config .gitleaks.toml"
+                    } else if (fileExists('gitleaks.toml')) {
+                        configFlag = "--config gitleaks.toml"
+                    }
+                    
+                    // Gitleaks tự động tìm file .gitleaksignore, không cần thêm tham số
+                    // --no-git: scan code hiện tại (không scan lịch sử), tăng tốc và tránh false positive từ commit cũ 
+                    // hoặc có thể xem xét BỎ cờ --no-git để bắt buộc Gitleaks soi toàn bộ lịch sử Commit (tránh lọt mã độc ẩn dấu)
+                    // --verbose: hiển thị chi tiết
+                    sh "gitleaks detect --source=. --no-git --verbose --exit-code=1 ${configFlag}"
+                }
+            }
+        }
+
         // Xử lý sự phụ thuộc trong Monorepo (Cài common-library vào máy Jenkins trước)
         if (!skipBuild && (changedBackend.size() > 0 || (getChangedFiles().any { it.startsWith('common-library/') }))) {
             stage('Pre-build Dependencies') {
