@@ -199,8 +199,21 @@ node('jenkins-agent') { // Đảm bảo node này có cài sẵn maven, npm, git
             stage('Security: Gitleaks') {
                 script {
                     def configFlag = fileExists('.gitleaks.toml') ? '--config .gitleaks.toml' : (fileExists('gitleaks.toml') ? '--config gitleaks.toml' : '')
-                    def logOpts = env.CHANGE_TARGET ? "--log-opts='origin/${env.CHANGE_TARGET}..HEAD'" : (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ? "--log-opts='${env.GIT_PREVIOUS_SUCCESSFUL_COMMIT}..${env.GIT_COMMIT}'" : '')
-                    sh "gitleaks detect --source=. ${logOpts} --verbose --exit-code=1 ${configFlag}"
+                    def ignoreFlag = fileExists('.gitleaksignore') ? '--gitleaks-ignore-path .gitleaksignore' : ''
+                    def logOpts = ''
+                    
+                    if (env.CHANGE_TARGET) {
+                        // Pull Request: chỉ quét các commit khác với target branch
+                        logOpts = "--log-opts='origin/${env.CHANGE_TARGET}..HEAD'"
+                    } else if (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT) {
+                        // Branch build đã có build thành công trước đó
+                        logOpts = "--log-opts='${env.GIT_PREVIOUS_SUCCESSFUL_COMMIT}..${env.GIT_COMMIT}'"
+                    } else {
+                        // Lần đầu build branch: chỉ quét commit cuối cùng
+                        logOpts = "--log-opts='HEAD~1..HEAD'"
+                    }
+                    
+                    sh "gitleaks detect --source=. ${logOpts} --verbose --exit-code=1 ${configFlag} ${ignoreFlag}"
                 }
             }
         }
