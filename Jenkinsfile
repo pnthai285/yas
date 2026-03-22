@@ -269,6 +269,8 @@ node('jenkins-agent') {
         if (!skipBuild && (changedBackend.size() > 0 || (getChangedFiles().any { it.startsWith('common-library/') }))) {
             stage('Pre-build Dependencies') {
                 def mavenCache = "${env.WORKSPACE}/.m2-cache"
+               // Xóa target của common-library để tránh lỗi không xóa được file
+                sh "rm -rf common-library/target || true"
                 sh "mvn install -N -B -Dmaven.test.skip=true -q -Dmaven.repo.local=${mavenCache}"
                 sh "mvn install -pl common-library -am -B -Dmaven.test.skip=true -q -Dmaven.repo.local=${mavenCache}"
             }
