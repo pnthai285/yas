@@ -58,7 +58,7 @@ def runBackendService(String service) {
         def localRepo = "${env.WORKSPACE}/.m2-repo-${service}"
         sh "mkdir -p ${localRepo} && cp -al ${env.WORKSPACE}/.m2-cache/. ${localRepo}/ || true"
         
-        // 3.1 Snyk scan (dùng CLI đã cài sẵn)
+        // 3.1 Snyk scan (dùng CLI đã cài sẵn trên jenkins agent)
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
             sh """
                 snyk auth \$SNYK_TOKEN
