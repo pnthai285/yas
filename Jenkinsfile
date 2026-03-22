@@ -68,10 +68,16 @@ def runBackendService(String service) {
         // GIẢI PHÁP CHO LỖI -13: 
         // 1. Chạy Snyk từ thư mục gốc (không dùng dir(service)) để Snyk nhận diện được cấu trúc Parent/Child POM.
         // 2. Truyền tham số --Dmaven.repo.local để Snyk dùng chung cache đã chuẩn bị, tránh tải lại gây timeout/treo.
-        withEnv(["PATH+MAVEN=${tool 'maven-3'}/bin"]) {
-            withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
-                sh "SNYK_TOKEN=\$SNYK_TOKEN snyk test --file=${service}/pom.xml --severity-threshold=high"
-            }
+        // 3.1. BẢO MẬT: Quét Snyk SCA (dùng Docker)
+        withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
+            sh """
+                docker run --rm \
+                    -e SNYK_TOKEN=\$SNYK_TOKEN \
+                    -v "${env.WORKSPACE}":/project \
+                    -w /project \
+                    snyk/snyk:alpine \
+                    snyk test --file=${service}/pom.xml --severity-threshold=high
+            """
         }
 
         // 3.2. KIỂM THỬ: Chạy Unit/Integration Test
@@ -171,8 +177,16 @@ def runFrontendService(String service) {
         }
 
         // 4.3 Quét Snyk SCA cho Frontend (package.json)
+        // 4.3 Quét Snyk SCA cho Frontend (dùng Docker)
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
-            sh "SNYK_TOKEN=\$SNYK_TOKEN snyk test --file=${service}/package.json --severity-threshold=high"
+            sh """
+                docker run --rm \
+                    -e SNYK_TOKEN=\$SNYK_TOKEN \
+                    -v "${env.WORKSPACE}":/project \
+                    -w /project/${service} \
+                    snyk/snyk:alpine \
+                    snyk test --file=package.json --severity-threshold=high
+            """
         }
 
         // 4.4 Build Docker Image nội bộ
