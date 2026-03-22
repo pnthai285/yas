@@ -14,10 +14,10 @@ def changedFrontend = []
 def skipBuild = false
 
 // ============================================================================
-// 2. HÀM PHÁT HIỆN THAY ĐỔI (3 TIER FALLBACK)
+// 2. HÀM PHÁT HIỆN THAY ĐỔI (3 TIER FALLBACK) - TRẢ VỀ LIST
 // ============================================================================
 def getChangedFiles() {
-    def files = []
+    def files = [] as List
     // Method 1: Jenkins changeSets
     currentBuild.changeSets.each { changeSet ->
         changeSet.each { entry -> files.addAll(entry.affectedPaths) }
@@ -25,13 +25,17 @@ def getChangedFiles() {
     // Method 2: GIT_PREVIOUS_SUCCESSFUL_COMMIT
     if (files.isEmpty() && env.GIT_PREVIOUS_SUCCESSFUL_COMMIT) {
         def raw = sh(script: "git diff --name-only ${env.GIT_PREVIOUS_SUCCESSFUL_COMMIT} ${env.GIT_COMMIT}", returnStdout: true).trim()
-        files = raw ? raw.split('\n') : []
+        if (raw) {
+            files.addAll(raw.split('\n') as List)
+        }
     }
     // Method 3: HEAD~1
     if (files.isEmpty()) {
         try {
             def raw = sh(script: 'git diff --name-only HEAD~1 HEAD', returnStdout: true).trim()
-            files = raw ? raw.split('\n') : []
+            if (raw) {
+                files.addAll(raw.split('\n') as List)
+            }
         } catch (e) { echo "⚠️ No previous commit; will build all." }
     }
     return files
@@ -158,6 +162,11 @@ def runFrontendService(String service) {
 // 5. PIPELINE CHÍNH (Scripted)
 // ============================================================================
 node('jenkins-agent') {
+    // Set environment variables
+    env.MIN_COVERAGE = '70'
+    env.SONAR_HOST = 'http://172.31.46.99:9000'
+    env.SONAR_BASE_KEY = 'my-yas'
+
     try {
         stage('Checkout') {
             checkout scm
