@@ -69,12 +69,13 @@ def runBackendService(String service) {
         // 1. Chạy Snyk từ thư mục gốc (không dùng dir(service)) để Snyk nhận diện được cấu trúc Parent/Child POM.
         // 2. Truyền tham số --Dmaven.repo.local để Snyk dùng chung cache đã chuẩn bị, tránh tải lại gây timeout/treo.
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
-            sh """
-                SNYK_TOKEN=\$SNYK_TOKEN snyk test \
-                    --file=${service}/pom.xml \
-                    --severity-threshold=high \
-                    -- -Dmaven.repo.local=${localRepo}
-            """
+            dir(service) {
+                sh """
+                    SNYK_TOKEN=\$SNYK_TOKEN snyk test \
+                        --maven-aggregate-project \
+                        --severity-threshold=high
+                """
+            }
         }
 
         // 3.2. KIỂM THỬ: Chạy Unit/Integration Test
