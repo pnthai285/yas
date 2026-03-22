@@ -82,8 +82,9 @@ def runBackendService(String service) {
 
         // 3.2. KIỂM THỬ: Chạy Unit/Integration Test
         // Chạy từ gốc với flag -pl (project list) để Maven tự điều phối các dependencies nội bộ
+        // Chúng ta chỉ build đúng service đó (-pl), vì common-library đã có trong localRepo rồi.
         retry(2) {
-            sh "mvn clean verify -pl ${service} -am -B -Dmaven.test.failure.ignore=false -Dmaven.repo.local=${localRepo} -DforkCount=1"
+            sh "mvn verify -pl ${service} -B -Dmaven.test.failure.ignore=false -Dmaven.repo.local=${localRepo} -DforkCount=1"
         }
         
         // Ghi nhận báo cáo test lên giao diện Jenkins
@@ -122,16 +123,16 @@ def runBackendService(String service) {
 
         // 3.5. ĐÓNG GÓI: Build Docker Image
         // Build file .jar/.war cuối cùng
-        sh "mvn package -pl ${service} -am -B -Dmaven.test.skip=true -Dmaven.repo.local=${localRepo}"
+        // sh "mvn package -pl ${service} -am -B -Dmaven.test.skip=true -Dmaven.repo.local=${localRepo}"
         
-        dir(service) {
-            def dockerTag = "yas-${service}:${BUILD_ID}"
-            sh "docker build --build-arg BUILDKIT_INLINE_CACHE=1 -t ${dockerTag} ."
+        // dir(service) {
+         //    def dockerTag = "yas-${service}:${BUILD_ID}"
+            // sh "docker build --build-arg BUILDKIT_INLINE_CACHE=1 -t ${dockerTag} ."
             
             // Nếu merge vào main thì tag latest
-            if (env.CHANGE_ID == null && env.BRANCH_NAME == 'main') {
-                sh "docker tag ${dockerTag} yas-${service}:latest"
-            }
+            // if (env.CHANGE_ID == null && env.BRANCH_NAME == 'main') {
+            //    sh "docker tag ${dockerTag} yas-${service}:latest"
+            // }
         }
     }
 }
@@ -190,12 +191,12 @@ def runFrontendService(String service) {
         }
 
         // 4.4 Build Docker Image nội bộ
-        dir(service) {
-            def dockerTag = "yas-${service}:${BUILD_ID}"
-            sh "docker build --build-arg BUILDKIT_INLINE_CACHE=1 -t ${dockerTag} ."
-            if (env.CHANGE_ID == null && env.BRANCH_NAME == 'main') {
-                sh "docker tag ${dockerTag} yas-${service}:latest"
-            }
+         //dir(service) {
+          //   def dockerTag = "yas-${service}:${BUILD_ID}"
+          //   sh "docker build --build-arg BUILDKIT_INLINE_CACHE=1 -t ${dockerTag} ."
+           //  if (env.CHANGE_ID == null && env.BRANCH_NAME == 'main') {
+            //     sh "docker tag ${dockerTag} yas-${service}:latest"
+            // }
         }
     }
 }
