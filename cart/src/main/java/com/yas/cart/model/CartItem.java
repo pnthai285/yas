@@ -26,3 +26,5 @@ public class CartItem extends AbstractAuditEntity {
     private Long productId;
     private int quantity;
 }
+
+// this is a comment 
