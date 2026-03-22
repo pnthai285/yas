@@ -75,7 +75,7 @@ def runBackendService(String service) {
                     -e SNYK_TOKEN=\$SNYK_TOKEN \
                     -v "${env.WORKSPACE}":/project \
                     -w /project \
-                    snyk/snyk:alpine \
+                    snyk/snyk:maven \
                     snyk test --file=${service}/pom.xml --severity-threshold=high
             """
         }
