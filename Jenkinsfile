@@ -202,50 +202,54 @@ node('jenkins-agent') {
             }
         }
 
-        stage('Security: Gitleaks') {
-            when { !skipBuild && (changedBackend || changedFrontend) }
-            script {
-                def gitleaksPath = "${env.WORKSPACE}/gitleaks-bin/gitleaks"
-                if (!fileExists(gitleaksPath)) {
-                    sh '''
-                        mkdir -p gitleaks-bin
-                        curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.22.1/gitleaks_8.22.1_linux_x64.tar.gz | tar xz -C gitleaks-bin/
-                        chmod +x gitleaks-bin/gitleaks
-                    '''
+        // Gitleaks stage (only if not skipped and there are changes)
+        if (!skipBuild && (changedBackend.size() > 0 || changedFrontend.size() > 0)) {
+            stage('Security: Gitleaks') {
+                script {
+                    def gitleaksPath = "${env.WORKSPACE}/gitleaks-bin/gitleaks"
+                    if (!fileExists(gitleaksPath)) {
+                        sh '''
+                            mkdir -p gitleaks-bin
+                            curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.22.1/gitleaks_8.22.1_linux_x64.tar.gz | tar xz -C gitleaks-bin/
+                            chmod +x gitleaks-bin/gitleaks
+                        '''
+                    }
+                    sh "${gitleaksPath} detect --source=. --no-git --verbose --exit-code=1"
                 }
-                sh "${gitleaksPath} detect --source=. --no-git --verbose --exit-code=1"
             }
         }
 
-        stage('Pre-build Dependencies') {
-            when { !skipBuild && (changedBackend || (allChangedFiles?.any { it.startsWith('common-library/') } ?: false)) }
-            script {
-                def mavenCache = "${env.WORKSPACE}/.m2-cache"
-                sh """
-                    mvn install -N -B -Dmaven.test.skip=true -q -Dmaven.repo.local=${mavenCache}
-                    mvn install -pl common-library -am -B -Dmaven.test.skip=true -q -Dmaven.repo.local=${mavenCache}
-                """
+        // Pre-build dependencies (if backend changes or common-library changes)
+        if (!skipBuild && (changedBackend.size() > 0 || (getChangedFiles().any { it.startsWith('common-library/') }))) {
+            stage('Pre-build Dependencies') {
+                script {
+                    def mavenCache = "${env.WORKSPACE}/.m2-cache"
+                    sh """
+                        mvn install -N -B -Dmaven.test.skip=true -q -Dmaven.repo.local=${mavenCache}
+                        mvn install -pl common-library -am -B -Dmaven.test.skip=true -q -Dmaven.repo.local=${mavenCache}
+                    """
+                }
             }
         }
 
         // Parallel backend builds
-        if (!skipBuild && changedBackend) {
-            def parallelBackend = [:]
-            changedBackend.each { service ->
-                parallelBackend[service] = { runBackendService(service) }
-            }
+        if (!skipBuild && changedBackend.size() > 0) {
             stage('Backend CI (Parallel)') {
+                def parallelBackend = [:]
+                changedBackend.each { service ->
+                    parallelBackend[service] = { runBackendService(service) }
+                }
                 parallel parallelBackend
             }
         }
 
         // Parallel frontend builds
-        if (!skipBuild && changedFrontend) {
-            def parallelFrontend = [:]
-            changedFrontend.each { service ->
-                parallelFrontend[service] = { runFrontendService(service) }
-            }
+        if (!skipBuild && changedFrontend.size() > 0) {
             stage('Frontend CI (Parallel)') {
+                def parallelFrontend = [:]
+                changedFrontend.each { service ->
+                    parallelFrontend[service] = { runFrontendService(service) }
+                }
                 parallel parallelFrontend
             }
         }
