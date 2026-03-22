@@ -14,7 +14,7 @@ def changedFrontend = []
 def skipBuild = false
 
 // ============================================================================
-// 2. HÀM HỖ TRỢ: PHÁT HIỆN THAY ĐỔI (3 TIER FALLBACK)
+// 2. HÀM PHÁT HIỆN THAY ĐỔI (3 TIER FALLBACK)
 // ============================================================================
 def getChangedFiles(currentBuild, env) {
     def files = []
@@ -45,23 +45,22 @@ def getChangedFiles(currentBuild, env) {
 // 3. PIPELINE CHÍNH
 // ============================================================================
 pipeline {
-    agent { label 'jenkins-agent' } // Use dedicated agent
+    agent { label 'jenkins-agent' }
 
     tools {
-        jdk 'jdk-25'                // JDK 21 (compatible with Spring Boot 3.2)
+        jdk 'jdk-25'                // JDK 25 
         maven 'maven-3'             // Maven 3.9+
-        nodejs 'nodejs-20'          // Node.js 20 for frontend
-        snyk 'snyk-cli'             // Snyk CLI tool
+        nodejs 'nodejs-20'          // Node.js 20
+        snyk 'snyk-cli'             // Snyk CLI
     }
 
     environment {
-        // JVM tuning for Maven (keep memory low, avoid OOM)
+        // JVM tuning
         MAVEN_OPTS = '-Xmx512m -XX:+TieredCompilation -XX:TieredStopAtLevel=1'
-        // Node.js memory limit (1GB)
         NODE_OPTIONS = '--max-old-space-size=1024'
-        // Docker BuildKit for faster builds
         DOCKER_BUILDKIT = '1'
-        // Testcontainers configuration (to work with Docker socket)
+
+        // Testcontainers
         TESTCONTAINERS_RYUK_DISABLED = 'true'
         TESTCONTAINERS_HOST_OVERRIDE = 'host.docker.internal'
         DOCKER_HOST = 'unix:///var/run/docker.sock'
@@ -71,7 +70,7 @@ pipeline {
         SONAR_BASE_KEY = 'my-yas'
         MIN_COVERAGE = '70'
 
-        // Use a local Maven cache for pre-built dependencies (hardlink later)
+        // Maven cache path (used for hardlink copy)
         MAVEN_CACHE = "${WORKSPACE}/.m2-cache"
     }
 
@@ -101,7 +100,7 @@ pipeline {
         }
 
         // --------------------------------------------------------------------
-        // STAGE: IMPACT ANALYSIS (Detect changed services, skip trivial)
+        // STAGE: SMART IMPACT ANALYSIS
         // --------------------------------------------------------------------
         stage('Smart Impact Analysis') {
             steps {
@@ -149,13 +148,12 @@ pipeline {
         }
 
         // --------------------------------------------------------------------
-        // STAGE: GITLEAKS (secret scan) – FAIL if secrets found
+        // STAGE: GITLEAKS (FAIL on secrets)
         // --------------------------------------------------------------------
         stage('Security: Gitleaks') {
             when { expression { !skipBuild && (changedBackend || changedFrontend) } }
             steps {
                 script {
-                    // Cache Gitleaks binary (optional, but saves download time)
                     def gitleaksPath = "${WORKSPACE}/gitleaks-bin/gitleaks"
                     if (!fileExists(gitleaksPath)) {
                         sh '''
@@ -164,19 +162,17 @@ pipeline {
                             chmod +x gitleaks-bin/gitleaks
                         '''
                     }
-                    // Fail on secrets (exit code 1)
                     sh "${gitleaksPath} detect --source=. --no-git --verbose --exit-code=1"
                 }
             }
         }
 
         // --------------------------------------------------------------------
-        // STAGE: PRE-BUILD DEPENDENCIES (install parent pom & common-library)
+        // STAGE: PRE-BUILD DEPENDENCIES (root & common-library)
         // --------------------------------------------------------------------
         stage('Pre-build Dependencies') {
-            when { expression { !skipBuild && (changedBackend || allChangedFiles?.any { it.startsWith('common-library/') }) } }
+            when { expression { !skipBuild && (changedBackend || (allChangedFiles?.any { it.startsWith('common-library/') } ?: false)) } }
             steps {
-                // Install into a shared cache location
                 sh """
                     mvn install -N -B -Dmaven.test.skip=true -q -Dmaven.repo.local=${MAVEN_CACHE}
                     mvn install -pl common-library -am -B -Dmaven.test.skip=true -q -Dmaven.repo.local=${MAVEN_CACHE}
@@ -184,22 +180,26 @@ pipeline {
             }
         }
 
-        // --------------------------------------------------------------------
-        // BACKEND CI MATRIX (with hardlink cache, concurrency=2)
-        // --------------------------------------------------------------------
+        // ====================================================================
+        // BACKEND MATRIX (with hardlink cache, concurrency 2)
+        // ====================================================================
         stage('Backend CI') {
             when { expression { !skipBuild && changedBackend } }
             matrix {
-                axes { axis { name 'SERVICE', values changedBackend } }
-                // Run up to 2 services in parallel (safe for 8GB agent)
-                options { matrix { concurrency(2) } }
+                axes {
+                    axis {
+                        name 'SERVICE'
+                        values changedBackend
+                    }
+                }
+                options {
+                    concurrency(2)          // Chạy tối đa 2 service song song
+                }
                 stages {
                     stage('Test & Coverage') {
                         steps {
                             script {
-                                // Create a dedicated Maven repository for this service
                                 def localRepo = "${WORKSPACE}/.m2-repo-${SERVICE}"
-                                // Hardlink copy from cache (zero disk usage, instant)
                                 sh """
                                     mkdir -p ${localRepo}
                                     cp -al ${MAVEN_CACHE}/. ${localRepo}/ || true
@@ -216,11 +216,9 @@ pipeline {
                         }
                         post {
                             always {
-                                // Publish JUnit test results
                                 junit testResults: "${SERVICE}/target/surefire-reports/*.xml, ${SERVICE}/target/failsafe-reports/*.xml",
                                          allowEmptyResults: true
 
-                                // Record coverage with threshold (LINE & BRANCH >= 70%)
                                 recordCoverage(
                                     tools: [[parser: 'JACOCO', pattern: "${SERVICE}/target/site/jacoco/jacoco.xml"]],
                                     sourceDirectories: [[path: "${SERVICE}/src/main/java"]],
@@ -254,7 +252,6 @@ pipeline {
                                     sh "mvn sonar:sonar -pl ${SERVICE} -am -B ${sonarParams} -Dmaven.repo.local=${localRepo}"
                                 }
                             }
-                            // Wait for SonarQube analysis and enforce quality gate
                             timeout(time: 5, unit: 'MINUTES') {
                                 waitForQualityGate abortPipeline: true
                             }
@@ -263,17 +260,12 @@ pipeline {
 
                     stage('Snyk & Docker') {
                         steps {
-                            // Snyk scan – FAIL on high severity vulnerabilities
                             withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
                                 script {
-                                    // Ensure Snyk is authenticated
                                     sh "snyk auth \$SNYK_TOKEN"
-                                    // Fail if high severity issues found
                                     sh "snyk test --file=${SERVICE}/pom.xml --severity-threshold=high"
                                 }
                             }
-
-                            // Package JAR and build Docker image
                             script {
                                 def localRepo = "${WORKSPACE}/.m2-repo-${SERVICE}"
                                 sh "mvn package -pl ${SERVICE} -am -B -Dmaven.test.skip=true -Dmaven.repo.local=${localRepo}"
@@ -281,8 +273,7 @@ pipeline {
                                 dir(SERVICE) {
                                     def dockerTag = "yas-${SERVICE}:${BUILD_ID}"
                                     sh "docker build --build-arg BUILDKIT_INLINE_CACHE=1 -t ${dockerTag} ."
-
-                                    // Tag 'latest' only when not a PR (safe for deployments)
+                                    // Tag latest only for non-PR builds
                                     if (env.CHANGE_ID == null) {
                                         sh "docker tag ${dockerTag} yas-${SERVICE}:latest"
                                     }
@@ -299,32 +290,33 @@ pipeline {
             }
         }
 
-        // --------------------------------------------------------------------
-        // FRONTEND CI MATRIX (with test coverage, Sonar, Snyk, Docker)
-        // --------------------------------------------------------------------
+        // ====================================================================
+        // FRONTEND MATRIX
+        // ====================================================================
         stage('Frontend CI') {
             when { expression { !skipBuild && changedFrontend } }
             matrix {
-                axes { axis { name 'SERVICE', values changedFrontend } }
-                options { matrix { concurrency(2) } }
+                axes {
+                    axis {
+                        name 'SERVICE'
+                        values changedFrontend
+                    }
+                }
+                options {
+                    concurrency(2)
+                }
                 stages {
                     stage('Test & Build') {
                         steps {
                             dir(SERVICE) {
-                                // Install dependencies (fast with offline mode)
                                 sh 'npm ci --prefer-offline --no-audit'
-                                // Run tests with coverage
                                 sh 'npm run test -- --coverage --reporters=jest-junit'
-                                // Build production bundle
                                 sh 'npm run build'
                             }
                         }
                         post {
                             always {
-                                // Publish test results (JUnit)
                                 junit testResults: "${SERVICE}/junit.xml", allowEmptyResults: true
-
-                                // Check coverage threshold manually
                                 script {
                                     def covFile = "${SERVICE}/coverage/coverage-summary.json"
                                     if (fileExists(covFile)) {
@@ -385,13 +377,12 @@ pipeline {
         }
     }
 
-    // --------------------------------------------------------------------
+    // ====================================================================
     // POST: CLEANUP
-    // --------------------------------------------------------------------
+    // ====================================================================
     post {
         always {
             script {
-                // Remove temporary Maven repositories to save disk space
                 sh "rm -rf ${MAVEN_CACHE} || true"
                 if (changedBackend) {
                     changedBackend.each { svc ->
