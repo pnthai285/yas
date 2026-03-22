@@ -165,7 +165,7 @@ node('jenkins-agent') { // Đảm bảo node này có cài sẵn maven, npm, git
     env.MIN_COVERAGE = '70'
     env.SONAR_BASE_KEY = 'my-yas'
     // Tối ưu bộ nhớ cho Maven khi chạy parallel, tránh lỗi Killed/OOM
-    env.MAVEN_OPTS = "-Xmx1024m -XX:MaxPermSize=512m" 
+    env.MAVEN_OPTS = "-Xmx1024m" 
     
     try {
         stage('Checkout Code') { checkout scm }
