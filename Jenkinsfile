@@ -10,7 +10,6 @@ def BACKEND_SERVICES = [
 
 def FRONTEND_SERVICES = ['storefront', 'backoffice']
 
-// Các mảng động
 def changedBackend = []
 def changedFrontend = []
 def skipBuild = false
@@ -28,20 +27,17 @@ def getChangedFiles() {
         return files
     }
     
-    // Branch build: lấy từ changeSets
     currentBuild.changeSets.each { changeSet ->
         changeSet.each { entry -> files.addAll(entry.affectedPaths) }
     }
     if (files) return files
     
-    // Dự phòng: diff với commit thành công trước đó
     if (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT) {
         def raw = sh(script: "git diff --name-only ${env.GIT_PREVIOUS_SUCCESSFUL_COMMIT} ${env.GIT_COMMIT}", returnStdout: true).trim()
         if (raw) files.addAll(raw.split('\n') as List)
     }
     if (files) return files
     
-    // Dự phòng cuối: diff với HEAD~1
     try {
         def raw = sh(script: 'git diff --name-only HEAD~1 HEAD', returnStdout: true).trim()
         if (raw) files.addAll(raw.split('\n') as List)
@@ -58,7 +54,7 @@ def runBackendService(String service) {
         def localRepo = "${env.WORKSPACE}/.m2-repo-${service}"
         sh "mkdir -p ${localRepo} && cp -al ${env.WORKSPACE}/.m2-cache/. ${localRepo}/ || true"
         
-        // 3.1 Snyk scan (dùng CLI đã cài sẵn, sửa lỗi auth)
+        // Snyk scan (sửa lỗi auth)
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
             sh """
                 snyk test --file=${service}/pom.xml \
@@ -68,15 +64,15 @@ def runBackendService(String service) {
             """
         }
         
-        // 3.2 Unit & Integration Tests
+        // Unit & Integration Tests
         retry(2) {
             sh "mvn verify -pl ${service} -am -B -Dmaven.test.failure.ignore=false -Dmaven.repo.local=${localRepo} -DforkCount=1"
         }
         
-        // 3.3 Publish test results
+        // Publish test results
         junit testResults: "${service}/target/surefire-reports/*.xml, ${service}/target/failsafe-reports/*.xml", allowEmptyResults: true
         
-        // 3.4 Coverage gate (≥70%)
+        // Coverage gate (≥70%)
         recordCoverage(
             tools: [[parser: 'JACOCO', pattern: "${service}/target/site/jacoco/jacoco.xml"]],
             sourceDirectories: [[path: "${service}/src/main/java"]],
@@ -85,22 +81,18 @@ def runBackendService(String service) {
             ]
         )
         
-        // 3.5 SonarQube analysis
+        // SonarQube analysis (không dùng pullrequest.* vì Community Edition)
         withSonarQubeEnv('SonarQube') {
             def sonarParams = "-Dsonar.projectKey=${env.SONAR_BASE_KEY}-${service} -Dsonar.projectName=YAS-${service}"
-            if (env.CHANGE_ID) {
-                sonarParams += " -Dsonar.pullrequest.key=${env.CHANGE_ID} -Dsonar.pullrequest.branch=${env.CHANGE_BRANCH} -Dsonar.pullrequest.base=${env.CHANGE_TARGET}"
-            } else {
-                sonarParams += " -Dsonar.branch.name=${env.BRANCH_NAME}"
-            }
+            sonarParams += " -Dsonar.branch.name=${env.BRANCH_NAME}"
             sonarParams += " -Dsonar.coverage.jacoco.xmlReportPaths=${service}/target/site/jacoco/jacoco.xml"
             sh "mvn sonar:sonar -pl ${service} -am -B ${sonarParams} -Dmaven.repo.local=${localRepo}"
         }
         
-        // 3.6 Wait for Quality Gate
+        // Wait for Quality Gate
         timeout(time: 5, unit: 'MINUTES') { waitForQualityGate abortPipeline: true }
         
-        // 3.7 Build JAR (tuỳ chọn)
+        // Build JAR (optional)
         // sh "mvn package -pl ${service} -am -B -DskipTests -Dmaven.repo.local=${localRepo}"
         // dir(service) { sh "docker build -t yas-${service}:${BUILD_ID} ." }
     }
@@ -118,7 +110,6 @@ def runFrontendService(String service) {
         }
         junit testResults: "${service}/junit.xml", allowEmptyResults: true
         
-        // Kiểm tra coverage frontend ≥70%
         def covFile = "${service}/coverage/coverage-summary.json"
         if (fileExists(covFile)) {
             def coverage = sh(script: "jq '.total.lines.pct' ${covFile}", returnStdout: true).trim()
@@ -127,13 +118,14 @@ def runFrontendService(String service) {
             }
         }
         
-        // SonarQube cho frontend
+        // SonarQube cho frontend (không dùng pullrequest.*)
         withSonarQubeEnv('SonarQube') {
             def scannerHome = tool name: 'SonarScanner'
             sh """
                 ${scannerHome}/bin/sonar-scanner \
                     -Dsonar.projectKey=${env.SONAR_BASE_KEY}-${service} \
                     -Dsonar.projectName=YAS-${service} \
+                    -Dsonar.branch.name=${env.BRANCH_NAME} \
                     -Dsonar.sources=${service}/src \
                     -Dsonar.javascript.lcov.reportPaths=${service}/coverage/lcov.info \
                     -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**
@@ -141,7 +133,7 @@ def runFrontendService(String service) {
         }
         timeout(time: 5, unit: 'MINUTES') { waitForQualityGate abortPipeline: true }
         
-        // Snyk scan frontend (sửa lỗi auth)
+        // Snyk scan frontend
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
             sh """
                 snyk test --file=package.json \
@@ -150,7 +142,7 @@ def runFrontendService(String service) {
             """
         }
         
-        // Build Docker image (tuỳ chọn)
+        // Build Docker image (optional)
         // dir(service) { sh "docker build -t yas-${service}:${BUILD_ID} ." }
     }
 }
@@ -159,12 +151,9 @@ def runFrontendService(String service) {
 // 5. PIPELINE CHÍNH
 // ============================================================================
 node('jenkins-agent') {
-    // Cấu hình môi trường
     env.MIN_COVERAGE = '70'
     env.SONAR_BASE_KEY = 'my-yas'
-    // env.SONAR_HOST_URL đã được định nghĩa trong cấu hình SonarQube server của Jenkins
-    // Nếu muốn ghi đè, có thể set lại:
-    // env.SONAR_HOST_URL = 'http://52.63.126.57:9000'  
+    // env.SONAR_HOST_URL không cần vì đã cấu hình trong Jenkins SonarQube server
     
     try {
         stage('Checkout Code') { checkout scm }
@@ -189,12 +178,12 @@ node('jenkins-agent') {
                 changedBackend = BACKEND_SERVICES.findAll { svc -> globalChanged || allChangedFiles.any { it.startsWith("${svc}/") } }
                 changedFrontend = FRONTEND_SERVICES.findAll { svc -> allChangedFiles.any { it.startsWith("${svc}/") } }
             }
-            changedBackend.remove('common-library')   // sẽ build riêng ở Pre-build
+            changedBackend.remove('common-library')
             echo "Backend services to build: ${changedBackend ?: 'none'}"
             echo "Frontend services to build: ${changedFrontend ?: 'none'}"
         }
         
-        // Gitleaks scan (dùng binary đã cài)
+        // Gitleaks scan
         if (!skipBuild && (changedBackend || changedFrontend)) {
             stage('Security: Gitleaks') {
                 script {
@@ -215,7 +204,7 @@ node('jenkins-agent') {
             }
         }
         
-        // Backend CI (chạy song song từng service để tránh quá tải)
+        // Backend CI (song song)
         if (!skipBuild && changedBackend) {
             stage('Backend CI') {
                 def parallelTasks = [:]
@@ -226,7 +215,7 @@ node('jenkins-agent') {
             }
         }
         
-        // Frontend CI (chạy song song tối đa 2 service cùng lúc)
+        // Frontend CI (theo lô)
         if (!skipBuild && changedFrontend) {
             stage('Frontend CI') {
                 def batches = changedFrontend.collate(2)
