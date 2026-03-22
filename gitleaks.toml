@@ -1,24 +1,38 @@
-# Title for the gitleaks configuration file.
-title = "Gitleaks title"
-
-# Extend the base (this) configuration. When you extend a configuration
-# the base rules take precedence over the extended rules. I.e., if there are
-# duplicate rules in both the base configuration and the extended configuration
-# the base rules will override the extended rules.
-# Another thing to know with extending configurations is you can chain together
-# multiple configuration files to a depth of 2. Allowlist arrays are appended
-# and can contain duplicates.
-# useDefault and path can NOT be used at the same time. Choose one.
-[extend]
-# useDefault will extend the base configuration with the default gitleaks config:
-# https://github.com/zricethezav/gitleaks/blob/master/config/gitleaks.toml
-useDefault = true
+# This file is based on Gitleaks default config, with custom allowlist paths added.
+title = "gitleaks config"
+minVersion = "v8.25.0"
 
 [allowlist]
-description = "global allow list"
+description = "global allow lists"
 paths = [
-  '''test-realm.json''',
-  '''realm-export''',
-  '''keycloak-yas-realm-import.yaml''',
-  '''target'''
+    '''gitleaks\.toml''',
+    '''(?i)\.(?:bmp|gif|jpe?g|png|svg|tiff?)$''',
+    '''(?i)\.(?:eot|[ot]tf|woff2?)$''',
+    '''(?i)\.(?:docx?|xlsx?|pdf|bin|socket|vsidx|v2|suo|wsuo|.dll|pdb|exe|gltf)$''',
+    '''go\.(?:mod|sum|work(?:\.sum)?)$''',
+    '''(?:^|/)vendor/modules\.txt$''',
+    '''(?:^|/)vendor/(?:github\.com|golang\.org/x|google\.golang\.org|gopkg\.in|istio\.io|k8s\.io|sigs\.k8s\.io)(?:/.*)?$''',
+    '''(?:^|/)gradlew(?:\.bat)?$''',
+    '''(?:^|/)gradle\.lockfile$''',
+    '''(?:^|/)mvnw(?:\.cmd)?$''',
+    '''(?:^|/)\.mvn/wrapper/MavenWrapperDownloader\.java$''',
+    '''(?:^|/)node_modules(?:/.*)?$''',
+    '''(?:^|/)(?:deno\.lock|npm-shrinkwrap\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$''',
+    '''(?:^|/)bower_components(?:/.*)?$''',
+    '''(?:^|/)(?:angular|bootstrap|jquery(?:-?ui)?|plotly|swagger-?ui)[a-zA-Z0-9.-]*(?:\.min)?\.js(?:\.map)?$''',
+    '''(?:^|/)javascript\.json$''',
+    '''(?:^|/)(?:Pipfile|poetry)\.lock$''',
+    '''(?i)(?:^|/)(?:v?env|virtualenv)/lib(?:64)?(?:/.*)?$''',
+    '''(?i)(?:^|/)(?:lib(?:64)?/python[23](?:\.\d{1,2})+|python/[23](?:\.\d{1,2})+/lib(?:64)?)(?:/.*)?$''',
+    '''(?i)(?:^|/)[a-z0-9_.]+-[0-9.]+\.dist-info(?:/.+)?$''',
+    '''(?:^|/)vendor/(?:bundle|ruby)(?:/.*?)?$''',
+    '''\.gem$''',
+    '''verification-metadata\.xml''',
+    '''Database.refactorlog''',
+    '''(?:^|/)\.git$''',
+    # Custom paths để bỏ qua các file test trong YAS
+    '''.*test-realm\.json''',
+    '''.*realm-export\.json''',
+    '''.*values\.yaml''',
+    '''.*keycloak-yas-realm-import\.yaml''',
 ]
