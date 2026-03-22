@@ -9,3 +9,16 @@ payment/src/main/resources/db/changelog/data/changelog-0001-provider.sql:generic
 payment/src/main/resources/db/changelog/data/changelog-0001-provider.sql:generic-api-key:5
 customer/src/it/resources/application.properties:generic-api-key:14
 customer/src/main/resources/application.properties:generic-api-key:34
+# Bỏ qua các file SQL chứa dữ liệu test (AWS tokens cũ)
+sampledata/src/main/resources/db/pg_largeobject.sql
+media/src/main/resources/db/changelog/data/changelog-0001.sql
+media/src/main/resources/db/changelog/ddl/changelog-0001.sql
+
+# Bỏ qua các file cấu hình chứa client-secret (nếu là test)
+storefront-bff/src/main/resources/application.yaml
+backoffice-bff/src/main/resources/application.yaml
+customer/src/main/resources/application.properties
+storefront/src/main/resources/application.properties
+
+# Bỏ qua dòng "password" trong code
+storefront-bff/src/main/java/com/yas/storefrontbff/filter/GuestAuthenticationFilter.java:42
