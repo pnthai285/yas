@@ -85,6 +85,7 @@ pipeline {
                     env.AFFECTED_MODULES = ''
                     env.COMMON_LIB_CHANGED = 'false'
                     env.SHOULD_BUILD = 'false'
+                    env.SONAR_RAN = 'false'
                     
                     try {
                         env.GIT_COMMIT_SHORT = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : 'unknown'
@@ -480,6 +481,7 @@ pipeline {
                             echo "[INFO] === UNIT TESTS STARTED ==="
                             
                             try {
+                                def sonarRan = false
                                 def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
                                 if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
                                     modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
@@ -658,6 +660,7 @@ pipeline {
                                     }
                                     
                                     echo "[INFO] Analyzing module: ${module} -> ${projectKey}"
+                                    sonarRan = true
                                     
                                     // Timeout cho Sonar scan
                                     timeout(time: 10, unit: 'MINUTES') {
@@ -679,6 +682,7 @@ pipeline {
                                         }
                                     }
                                 }
+                                env.SONAR_RAN = sonarRan ? 'true' : 'false'
                                 
                             } catch (Exception e) {
                                 echo "[ERROR] SonarQube analysis failed: ${e.message}"
@@ -693,7 +697,7 @@ pipeline {
                 // 4.8: Quality Gate (Coverage Check cho PR)
                 // ------------------------------------------------
                 stage('Quality Gate') {
-                    when { expression { env.CHANGE_ID != null } }
+                    when { expression { env.CHANGE_ID != null && env.SONAR_RAN == 'true' } }
                     steps {
                         script {
                             echo "[INFO] === QUALITY GATE CHECK STARTED ==="
