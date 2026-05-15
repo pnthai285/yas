@@ -1,273 +1,470 @@
-// ============================================================================
-// 1. CẤU HÌNH BIẾN TOÀN CỤC
-// ============================================================================
-def BACKEND_SERVICES = [
-    'common-library', 'backoffice-bff', 'cart', 'customer', 'delivery',
-    'inventory', 'location', 'media', 'order', 'payment', 'payment-paypal',
-    'product', 'promotion', 'rating', 'recommendation', 'sampledata',
-    'search', 'storefront-bff', 'tax', 'webhook'
-]
+pipeline {
+    // ============================================================
+    // 1. AGENT & OPTIONS
+    // ============================================================
+    agent none
 
-def FRONTEND_SERVICES = ['storefront', 'backoffice']
-
-def changedBackend = []
-def changedFrontend = []
-def skipBuild = false
-
-// ============================================================================
-// 2. HÀM PHÁT HIỆN FILE THAY ĐỔI
-// ============================================================================
-def getChangedFiles() {
-    def files = [] as List
-    
-    if (env.CHANGE_TARGET) {                       // PR build
-        sh "git fetch origin ${env.CHANGE_TARGET}:refs/remotes/origin/${env.CHANGE_TARGET} --no-tags"
-        def raw = sh(script: "git diff --name-only origin/${env.CHANGE_TARGET}...HEAD", returnStdout: true).trim()
-        if (raw) files.addAll(raw.split('\n') as List)
-        return files
+    options {
+        retry(3)                                           // Master retry khi Spot bị reclaim
+        timeout(time: 60, unit: 'MINUTES')                 // Bảo vệ zombie pipeline
+        disableConcurrentBuilds()                          // Tránh lãng phí spot agent
+        buildDiscarder(logRotator(numToKeepStr: '10'))     // Giữ 10 build gần nhất
+        timestamps()                                       // Log có timestamp
+        githubCommitStatus(context: 'continuous-integration/jenkins/pr-head')
     }
-    
-    currentBuild.changeSets.each { changeSet ->
-        changeSet.each { entry -> files.addAll(entry.affectedPaths) }
-    }
-    if (files) return files
-    
-    if (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT) {
-        def raw = sh(script: "git diff --name-only ${env.GIT_PREVIOUS_SUCCESSFUL_COMMIT} ${env.GIT_COMMIT}", returnStdout: true).trim()
-        if (raw) files.addAll(raw.split('\n') as List)
-    }
-    if (files) return files
-    
-    try {
-        def raw = sh(script: 'git diff --name-only HEAD~1 HEAD', returnStdout: true).trim()
-        if (raw) files.addAll(raw.split('\n') as List)
-    } catch (e) { echo "⚠️ No previous commit (first build?)" }
-    
-    return files
-}
 
-// ============================================================================
-// 3. HÀM XỬ LÝ BACKEND SERVICE
-// ============================================================================
-def runBackendService(String service) {
-    stage("Backend: ${service}") {
-        def localRepo = "${env.WORKSPACE}/.m2-repo-${service}"
-        sh "mkdir -p ${localRepo} && cp -al ${env.WORKSPACE}/.m2-cache/. ${localRepo}/ || true"
+    // ============================================================
+    // 2. ENVIRONMENT VARIABLES
+    // ============================================================
+    environment {
+        BRANCH_NAME        = "${env.BRANCH_NAME}"
+        CHANGE_ID          = "${env.CHANGE_ID}"
+        CHANGE_TARGET      = "${env.CHANGE_TARGET ?: 'main'}"
+        GIT_COMMIT_SHORT   = "${env.GIT_COMMIT.take(7)}"
         
-        // Snyk scan
-        withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
-            sh """
-                snyk test --file=${service}/pom.xml \
-                    --severity-threshold=high \
-                    --maven-aggregate-project \
-                    --token=\$SNYK_TOKEN || true
-            """
-        }
-        
-        // Unit & Integration Tests
-        retry(2) {
-            sh "mvn verify -pl ${service} -am -B -Dmaven.test.failure.ignore=false -Dmaven.repo.local=${localRepo} -DforkCount=1"
-        }
-        
-        // Publish test results
-        junit testResults: "${service}/target/surefire-reports/*.xml, ${service}/target/failsafe-reports/*.xml", allowEmptyResults: true
-        
-        // Coverage gate của Jenkins (≥70%)
-        recordCoverage(
-            tools: [[parser: 'JACOCO', pattern: "${service}/target/site/jacoco/jacoco.xml"]],
-            sourceDirectories: [[path: "${service}/src/main/java"]],
-            qualityGates: [
-                [threshold: 70.0, metric: 'LINE', baseline: 'PROJECT', criticality: 'FAILURE']
-            ]
-        )
-        
-        // SonarQube analysis (Đã kích hoạt PR Analysis nhờ Plugin)
-        withSonarQubeEnv('SonarQube') {
-            def sonarParams = "-Dsonar.projectKey=${env.SONAR_BASE_KEY}-${service} -Dsonar.projectName=YAS-${service}"
-            sonarParams += " -Dsonar.coverage.jacoco.xmlReportPaths=${service}/target/site/jacoco/jacoco.xml"
-        
-            if (env.CHANGE_ID) {
-                // Đây là build của Pull Request
-                sonarParams += " -Dsonar.branch.name=${env.CHANGE_BRANCH}"
-                sonarParams += " -Dsonar.branch.target=${env.CHANGE_TARGET}"
-            } else {
-                // Build nhánh thường (main, develop, ...)
-                sonarParams += " -Dsonar.branch.name=${env.BRANCH_NAME}"
-            }
-        
-            sh "mvn sonar:sonar -pl ${service} -am -B ${sonarParams} -Dmaven.repo.local=${localRepo}"
-        }
-        
-        // Wait for Quality Gate
-        timeout(time: 5, unit: 'MINUTES') { waitForQualityGate abortPipeline: true }
+        // SonarCloud project keys (đã tạo trên UI)
+        PROJECT_KEYS = '''
+            backoffice:pnthai285_yas-backoffice
+            backoffice-bff:pnthai285_yas-backoffice-bff
+            cart:pnthai285_yas-cart
+            common-library:pnthai285_yas-common-library
+            customer:pnthai285_yas-customer
+            delivery:pnthai285_yas-delivery
+            inventory:pnthai285_yas-inventory
+            location:pnthai285_yas-location
+            media:pnthai285_yas-media
+            order:pnthai285_yas-order
+            payment:pnthai285_yas-payment
+            payment-paypal:pnthai285_yas-payment-paypal
+            product:pnthai285_yas-product
+            promotion:pnthai285_yas-promotion
+            rating:pnthai285_yas-rating
+            recommendation:pnthai285_yas-recommendation
+            sampledata:pnthai285_yas-sampledata
+            search:pnthai285_yas-search
+            storefront:pnthai285_yas-storefront
+            storefront-bff:pnthai285_yas-storefront-bff
+            tax:pnthai285_yas-tax
+            webhook:pnthai285_yas-webhook
+        '''
     }
-}
 
-// ============================================================================
-// 4. HÀM XỬ LÝ FRONTEND SERVICE
-// ============================================================================
-def runFrontendService(String service) {
-    stage("Frontend: ${service}") {
-        dir(service) {
-            sh 'npm ci --prefer-offline --no-audit'
-            sh 'npm run test -- --coverage --coverageReporters="json-summary" --coverageReporters="lcov" --reporters=jest-junit'
-            sh 'npm run build'
-        }
-        junit testResults: "${service}/junit.xml", allowEmptyResults: true
-        
-        // Fast-fail coverage check
-        def covFile = "${service}/coverage/coverage-summary.json"
-        if (fileExists(covFile)) {
-            def coverage = sh(script: "jq '.total.lines.pct' ${covFile}", returnStdout: true).trim()
-            if (coverage.toDouble() < 70.0) {
-                error "❌ Frontend coverage ${coverage}% < 70%"
-            }
-        }
-        
-        // SonarQube cho frontend (Kích hoạt PR Analysis)
-        withSonarQubeEnv('SonarQube') {
-            def scannerHome = tool name: 'SonarScanner' // Đảm bảo đã cấu hình SonarScanner trong Jenkins
-        
-            def sonarParams = "-Dsonar.projectKey=${env.SONAR_BASE_KEY}-${service} " +
-                              "-Dsonar.projectName=YAS-${service} " +
-                              "-Dsonar.sources=${service}/src " +
-                              "-Dsonar.javascript.lcov.reportPaths=${service}/coverage/lcov.info " +
-                              "-Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**"
-        
-            if (env.CHANGE_ID) {
-                sonarParams += " -Dsonar.branch.name=${env.CHANGE_BRANCH}"
-                sonarParams += " -Dsonar.branch.target=${env.CHANGE_TARGET}"
-            } else {
-                sonarParams += " -Dsonar.branch.name=${env.BRANCH_NAME}"
-            }
-        
-            sh "${scannerHome}/bin/sonar-scanner ${sonarParams}"
-        }
-        
-        timeout(time: 5, unit: 'MINUTES') { waitForQualityGate abortPipeline: true }
-        
-        // Snyk scan frontend
-        withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
-            sh """
-                snyk test --file=${service}/package.json \
-                    --severity-threshold=high \
-                    --token=\$SNYK_TOKEN || true
-            """
-        }
-    }
-}
-
-// ============================================================================
-// 5. PIPELINE CHÍNH
-// ============================================================================
-node('jenkins-agent') { // Đảm bảo node này có cài sẵn maven, npm, git, jq
-    env.MIN_COVERAGE = '70'
-    env.SONAR_BASE_KEY = 'my-yas'
-    // Tối ưu bộ nhớ cho Maven khi chạy parallel, tránh lỗi Killed/OOM
-    env.MAVEN_OPTS = "-Xmx1024m" 
-    
-    try {
-        stage('Checkout Code') { checkout scm }
-        
-        stage('Smart Impact Analysis') {
-            def allChangedFiles = getChangedFiles()
-            def skipPatterns = [/^README\.md$/, /^\.gitignore$/, /^Jenkinsfile$/, /^\.github\/.*/, /^docs\/.*/, /^\.git\/.*/]
-            def onlyTrivial = !allChangedFiles.isEmpty() && allChangedFiles.every { file -> skipPatterns.any { pattern -> file ==~ pattern } }
-            
-            if (onlyTrivial) {
-                echo "✅ Only trivial changes. Skipping build."
-                skipBuild = true
-                currentBuild.result = 'SUCCESS'
-                return
-            }
-            
-            if (allChangedFiles.isEmpty()) {
-                changedBackend = BACKEND_SERVICES
-                changedFrontend = FRONTEND_SERVICES
-            } else {
-                def globalChanged = allChangedFiles.any { it == 'pom.xml' || it.startsWith('common-library/') }
-                changedBackend = BACKEND_SERVICES.findAll { svc -> globalChanged || allChangedFiles.any { it.startsWith("${svc}/") } }
-                changedFrontend = FRONTEND_SERVICES.findAll { svc -> allChangedFiles.any { it.startsWith("${svc}/") } }
-            }
-            changedBackend.remove('common-library')
-            echo "Backend services to build: ${changedBackend ?: 'none'}"
-            echo "Frontend services to build: ${changedFrontend ?: 'none'}"
-        }
-        
-        // Gitleaks scan
-        if (!skipBuild && (changedBackend || changedFrontend)) {
-            stage('Security: Gitleaks') {
+    // ============================================================
+    // 3. STAGES (Smart Routing + Gitleaks trên master)
+    // ============================================================
+    stages {
+        stage('Smart Routing') {
+            agent { label 'master' }
+            steps {
                 script {
-                    def configFlag = fileExists('.gitleaks.toml') ? '--config .gitleaks.toml' : (fileExists('gitleaks.toml') ? '--config gitleaks.toml' : '')
-                    def ignoreFlag = fileExists('.gitleaksignore') ? '--gitleaks-ignore-path .gitleaksignore' : ''
-                    def logOpts = ''
+                    echo "[INFO] Fetching target branch: ${CHANGE_TARGET}"
+                    sh "git fetch origin ${CHANGE_TARGET}:refs/remotes/origin/${CHANGE_TARGET}"
                     
-                    if (env.CHANGE_TARGET) {
-                        // Pull Request: chỉ quét các commit khác với target branch
-                        logOpts = "--log-opts='origin/${env.CHANGE_TARGET}..HEAD'"
-                    } else if (env.GIT_PREVIOUS_SUCCESSFUL_COMMIT) {
-                        // Branch build đã có build thành công trước đó
-                        logOpts = "--log-opts='${env.GIT_PREVIOUS_SUCCESSFUL_COMMIT}..${env.GIT_COMMIT}'"
-                    } else {
-                        // Lần đầu build branch: chỉ quét commit cuối cùng
-                        logOpts = "--log-opts='HEAD~1..HEAD'"
+                    def changedFiles = sh(
+                        script: "git diff --name-only origin/${CHANGE_TARGET}...HEAD",
+                        returnStdout: true
+                    ).trim().split('\n')
+                    
+                    // Lấy danh sách module (chứa pom.xml hoặc package.json)
+                    def allModules = sh(
+                        script: "find . -maxdepth 2 \\( -name 'pom.xml' -o -name 'package.json' \\) -printf '%h\\n' | sed 's|^\\./||' | grep -v '^.$' | sort -u",
+                        returnStdout: true
+                    ).trim().split('\n')
+                    
+                    def affected = []
+                    def commonLibChanged = false
+                    changedFiles.each { file ->
+                        if (file.startsWith('common-library/')) commonLibChanged = true
+                        def module = allModules.find { m -> file.startsWith(m + '/') || file == m }
+                        if (module && !affected.contains(module)) affected << module
                     }
                     
-                    sh "gitleaks detect --source=. ${logOpts} --verbose --exit-code=1 ${configFlag} ${ignoreFlag}"
+                    env.AFFECTED_MODULES = affected.join(',')
+                    env.COMMON_LIB_CHANGED = commonLibChanged.toString()
+                    env.SHOULD_BUILD = (affected.size() > 0 || commonLibChanged) ? 'true' : 'false'
+                    
+                    echo "[RESULT] Affected modules: ${env.AFFECTED_MODULES}"
+                    echo "[RESULT] Common lib changed: ${env.COMMON_LIB_CHANGED}"
+                    echo "[RESULT] Should build: ${env.SHOULD_BUILD}"
                 }
             }
         }
-        
-        // Pre-build common-library
-        if (!skipBuild && (changedBackend || getChangedFiles().any { it.startsWith('common-library/') })) {
-            stage('Pre-build Dependencies') {
-                def mavenCache = "${env.WORKSPACE}/.m2-cache"
-                sh "mkdir -p ${mavenCache}"
-                sh "rm -rf common-library/target || true"
-                sh "mvn install -N -B -DskipTests -q -Dmaven.repo.local=${mavenCache}"
-                sh "mvn install -pl common-library -am -B -DskipTests -Dmaven.repo.local=${mavenCache}"
-            }
-        }
-        
-        // Backend CI (song song)
-        if (!skipBuild && changedBackend) {
-            stage('Backend CI') {
-                def parallelTasks = [:]
-                changedBackend.each { svc ->
-                    parallelTasks[svc] = { runBackendService(svc) }
+
+        stage('Gitleaks Scan') {
+            when { expression { env.SHOULD_BUILD == 'true' } }
+            agent { label 'master' }
+            steps {
+                script {
+                    sh """
+                        if ! command -v gitleaks &> /dev/null; then
+                            echo "[INFO] Installing gitleaks binary..."
+                            curl -sL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks-linux-amd64 -o gitleaks
+                            chmod +x gitleaks
+                            sudo mv gitleaks /usr/local/bin/
+                        fi
+                        echo "[INFO] Running Gitleaks..."
+                        gitleaks detect --source=. --verbose --redact
+                    """
                 }
-                parallel parallelTasks
+                echo "[OK] Gitleaks passed."
             }
         }
-        
-        // Frontend CI (theo lô để tránh treo máy)
-        if (!skipBuild && changedFrontend) {
-            stage('Frontend CI') {
-                def batches = changedFrontend.collate(2) // Chạy song song 2 services frontend mỗi lượt
-                batches.eachWithIndex { batch, idx ->
-                    def parallelTasks = [:]
-                    batch.each { svc ->
-                        parallelTasks[svc] = { runFrontendService(svc) }
+
+        // Nếu không có thay đổi, skip toàn bộ heavy build
+        stage('Skip Heavy Build') {
+            when { expression { env.SHOULD_BUILD == 'false' } }
+            steps {
+                echo "[INFO] No changes in any module. Skipping heavy build."
+                currentBuild.result = 'SUCCESS'
+                // Không dùng return, pipeline sẽ tự kết thúc vì không còn stage nào khác
+                // Để đảm bảo, ta dùng error để exit? Không, chỉ cần set result và không làm gì thêm.
+            }
+        }
+
+        // ============================================================
+        // 4. HEAVY BUILD TRÊN SPOT AGENT (NVMe)
+        // ============================================================
+        stage('Heavy Build') {
+            when { expression { env.SHOULD_BUILD == 'true' } }
+            agent { label 'aws-spot-nvme' }
+            
+            stages {
+                stage('Checkout & Setup') {
+                    steps {
+                        checkout scm
+                        script {
+                            try {
+                                env.ACCOUNT_ID = sh(script: 'aws sts get-caller-identity --query Account --output text', 
+                                                   returnStdout: true).trim()
+                                env.CACHE_BUCKET = "yas-cache-${env.ACCOUNT_ID}"
+                                env.HUB_IP = sh(
+                                    script: "aws ssm get-parameter --name /yas/hub/private_ip --region us-east-1 --query Parameter.Value --output text",
+                                    returnStdout: true
+                                ).trim()
+                                env.REGISTRY = "${env.HUB_IP}:5000"
+                                echo "[INFO] Local registry: ${env.REGISTRY}"
+                                echo "[INFO] Cache bucket: ${env.CACHE_BUCKET}"
+                            } catch (Exception e) {
+                                error "❌ Failed to get AWS credentials or SSM parameter: ${e.message}. Check IAM role on Spot Agent."
+                            }
+                        }
                     }
-                    echo "🚀 Batch Frontend #${idx+1}: ${batch}"
-                    parallel parallelTasks
+                }
+
+                stage('Verify Registry Connectivity') {
+                    steps {
+                        sh """
+                            echo "[INFO] Testing registry connection to ${env.HUB_IP}:5000"
+                            curl -f http://${env.HUB_IP}:5000/v2/_catalog || {
+                                echo "[ERROR] Registry not reachable!"
+                                exit 1
+                            }
+                            echo "[OK] Registry is accessible"
+                        """
+                    }
+                }
+
+                stage('Restore Maven Cache') {
+                    steps {
+                        script {
+                            // Cache key bao gồm cả pom.xml và package.json
+                            def cacheHash = sh(
+                                script: """
+                                    find . \\( -name 'pom.xml' -o -name 'package.json' \\) -exec md5sum {} + | md5sum | awk '{print \$1}'
+                                """,
+                                returnStdout: true
+                            ).trim()
+                            env.CACHE_KEY = cacheHash
+                            echo "[INFO] Cache key: ${env.CACHE_KEY}"
+                            sh """
+                                set +e
+                                aws s3 cp s3://${CACHE_BUCKET}/maven/${BRANCH_NAME}-${CACHE_KEY}.tar.gz ./cache.tar.gz
+                                if [ \$? -eq 0 ]; then
+                                    # Verify integrity (optional checksum)
+                                    aws s3 cp s3://${CACHE_BUCKET}/maven/${BRANCH_NAME}-${CACHE_KEY}.tar.gz.md5 ./cache.tar.gz.md5 2>/dev/null
+                                    if [ -f cache.tar.gz.md5 ]; then
+                                        echo "[INFO] Verifying cache checksum..."
+                                        md5sum -c cache.tar.gz.md5 || { echo "❌ Cache corrupt!"; exit 1; }
+                                    else
+                                        echo "[WARN] No checksum file, skipping verification"
+                                    fi
+                                    tar -xzf cache.tar.gz -C ~/.m2
+                                    echo "[OK] Restored branch cache"
+                                else
+                                    aws s3 cp s3://${CACHE_BUCKET}/maven/main-${CACHE_KEY}.tar.gz ./cache.tar.gz
+                                    if [ \$? -eq 0 ]; then
+                                        tar -xzf cache.tar.gz -C ~/.m2
+                                        echo "[OK] Restored main cache"
+                                    else
+                                        echo "[INFO] No cache found, starting fresh"
+                                    fi
+                                fi
+                                rm -f cache.tar.gz cache.tar.gz.md5
+                            """
+                        }
+                    }
+                }
+
+                stage('Build & Test') {
+                    steps {
+                        script {
+                            def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',') : []
+                            if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
+                                modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }
+                                echo "[INFO] Common lib changed, will build all modules"
+                            }
+                            
+                            // Tách riêng frontend và backend
+                            def frontendModules = modules.findAll { it in ['backoffice', 'storefront'] }
+                            def backendModules = modules.findAll { it !in ['backoffice', 'storefront'] }
+                            
+                            // 1. Frontend
+                            frontendModules.each { module ->
+                                echo "[INFO] Building frontend module: ${module}"
+                                dir(module) {
+                                    sh """
+                                        npm ci --prefer-offline --no-audit
+                                        npm run build
+                                        npm test -- --coverage --watchAll=false
+                                    """
+                                }
+                            }
+                            
+                            // 2. Backend Maven reactor (một lệnh duy nhất)
+                            if (backendModules.size() > 0) {
+                                def usesJava21 = backendModules.any { it.contains('automation-ui') }
+                                def javaHome = usesJava21 
+                                    ? '/usr/lib/jvm/java-21-amazon-corretto'
+                                    : '/usr/lib/jvm/java-25-amazon-corretto'
+                                def mvnCmd = "/opt/maven/bin/mvn clean verify -T 1C -pl ${backendModules.join(',')}"
+                                if (env.CHANGE_ID) mvnCmd += " -fae"
+                                if (env.COMMON_LIB_CHANGED == 'true') mvnCmd += " -amd"
+                                
+                                sh """
+                                    export JAVA_HOME=${javaHome}
+                                    export PATH=${javaHome}/bin:\$PATH
+                                    ${mvnCmd}
+                                """
+                            }
+                        }
+                    }
+                }
+
+                stage('SonarQube Analysis') {
+                    when {
+                        anyOf {
+                            branch 'main'
+                            expression { env.CHANGE_ID != null }
+                        }
+                    }
+                    steps {
+                        script {
+                            def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',') : []
+                            if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
+                                modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }
+                            }
+                            modules.each { module ->
+                                if (fileExists("${module}/pom.xml")) {
+                                    def projectKey = PROJECT_KEYS.find { it.startsWith("${module}:") }?.split(':')?[1]
+                                    if (!projectKey) {
+                                        echo "[WARN] No Sonar project key for module: ${module}, skipping"
+                                        return
+                                    }
+                                    withSonarQubeEnv('sonarcloud') {
+                                        echo "[INFO] Analyzing module: ${module} -> ${projectKey}"
+                                        sh """
+                                            /opt/maven/bin/mvn sonar:sonar \
+                                                -pl ${module} \
+                                                -Dsonar.projectKey=${projectKey} \
+                                                -Dsonar.projectName=${module} \
+                                                -Dsonar.sources=${module}/src/main/java \
+                                                -Dsonar.tests=${module}/src/test/java \
+                                                -Dsonar.java.binaries=${module}/target/classes \
+                                                -Dsonar.coverage.jacoco.xmlReportPaths=${module}/target/site/jacoco/jacoco.xml
+                                        """
+                                    }
+                                } else {
+                                    echo "[INFO] Skipping Sonar for non-Java module: ${module}"
+                                }
+                            }
+                        }
+                    }
+                }
+
+                stage('Quality Gate') {
+                    when { expression { env.CHANGE_ID != null } }
+                    steps {
+                        timeout(time: 15, unit: 'MINUTES') {
+                            waitForQualityGate abortPipeline: true
+                        }
+                    }
+                }
+
+                stage('Snyk Security Scan') {
+                    when {
+                        anyOf {
+                            branch 'main'
+                            expression { env.CHANGE_ID != null }
+                        }
+                    }
+                    steps {
+                        timeout(time: 10, unit: 'MINUTES') {  // Thêm timeout cho Snyk
+                            withCredentials([string(credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN')]) {
+                                script {
+                                    def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',') : []
+                                    if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
+                                        modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }
+                                    }
+                                    modules.each { module ->
+                                        def scanDir = (module == 'common-library') ? '.' : module
+                                        // Xác định đường dẫn tuyệt đối để mount
+                                        def scanPath = (scanDir == '.') ? "${WORKSPACE}" : "${WORKSPACE}/${scanDir}"
+                                        sh """
+                                            echo "[INFO] Running Snyk scan for module: ${module} (${scanPath})"
+                                            docker run --rm \
+                                                -v ${scanPath}:/app \
+                                                -e SNYK_TOKEN=\${SNYK_TOKEN} \
+                                                snyk/snyk:alpine \
+                                                snyk test --severity-threshold=high --fail-on=all
+                                        """
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                stage('Build & Push Docker Image') {
+                    when { branch 'main' }
+                    steps {
+                        script {
+                            def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',') : []
+                            modules.each { module ->
+                                def dockerfilePath = "${module}/Dockerfile"
+                                if (!fileExists(dockerfilePath)) {
+                                    echo "[WARN] No Dockerfile for ${module}, skipping image build"
+                                    return
+                                }
+                                def immutableTag = "yas-${module}:${env.GIT_COMMIT_SHORT}"
+                                echo "[INFO] Building image for module: ${module}"
+                                
+                                if (module in ['backoffice', 'storefront']) {
+                                    sh """
+                                        docker build -f ${dockerfilePath} \
+                                            -t ${env.REGISTRY}/${immutableTag} .
+                                        docker push ${env.REGISTRY}/${immutableTag}
+                                    """
+                                } else {
+                                    dir(module) {
+                                        sh """
+                                            docker build -t ${env.REGISTRY}/${immutableTag} .
+                                            docker push ${env.REGISTRY}/${immutableTag}
+                                        """
+                                    }
+                                }
+                                def mutableTag = "yas-${module}:${env.BRANCH_NAME.replace('/', '-')}-${env.GIT_COMMIT_SHORT}"
+                                sh """
+                                    docker tag ${env.REGISTRY}/${immutableTag} ${env.REGISTRY}/${mutableTag}
+                                    docker push ${env.REGISTRY}/${mutableTag}
+                                """
+                                echo "[OK] Pushed ${immutableTag}"
+                            }
+                        }
+                    }
+                }
+
+                stage('GitOps Handoff (Template)') {
+                    when { branch 'main' }
+                    steps {
+                        script {
+                            def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',') : []
+                            echo "=================================================="
+                            echo "[GITOPS HANDOFF] Khi có repo GitOps, thay thế placeholder này bằng:"
+                            echo "1. Clone repo yas-gitops-config (dùng lock để tránh conflict)"
+                            echo "2. Update deployment.yaml với immutable tag: ${env.GIT_COMMIT_SHORT}"
+                            echo "3. Commit và push (git pull --rebase trước push)"
+                            echo ""
+                            echo "Affected modules:"
+                            modules.each { module ->
+                                echo "  - ${module}: image = ${env.REGISTRY}/yas-${module}:${env.GIT_COMMIT_SHORT}"
+                            }
+                            echo "=================================================="
+                            // Mẫu implement khi có repo:
+                            // lock('gitops-repo') {
+                            //     retry(3) {
+                            //         withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                            //             sh """
+                            //                 git clone https://x-access-token:${GITHUB_TOKEN}@github.com/your-org/yas-gitops-config.git
+                            //                 cd yas-gitops-config
+                            //                 # update yaml files
+                            //                 git add .
+                            //                 git commit -m "Update images to ${GIT_COMMIT_SHORT}"
+                            //                 git pull --rebase origin main
+                            //                 git push origin main
+                            //             """
+                            //         }
+                            //     }
+                            // }
+                        }
+                    }
+                }
+
+                stage('Save Maven Cache') {
+                    when { expression { currentBuild.result == null || currentBuild.result == 'SUCCESS' } }
+                    steps {
+                        sh """
+                            echo "[INFO] Saving cache for branch ${BRANCH_NAME}"
+                            tar -czf cache.tar.gz -C ~/.m2 repository
+                            aws s3 cp cache.tar.gz s3://${CACHE_BUCKET}/maven/${BRANCH_NAME}-${CACHE_KEY}.tar.gz
+                            # Optionally create checksum
+                            md5sum cache.tar.gz | awk '{print \$1}' > cache.tar.gz.md5
+                            aws s3 cp cache.tar.gz.md5 s3://${CACHE_BUCKET}/maven/${BRANCH_NAME}-${CACHE_KEY}.tar.gz.md5
+                            rm -f cache.tar.gz cache.tar.gz.md5
+                            echo "[OK] Cache saved"
+                        """
+                    }
                 }
             }
         }
-        
-    } catch (Exception e) {
-        currentBuild.result = 'FAILURE'
-        throw e
-    } finally {
-        stage('Cleanup') {
-            sh "rm -rf ${env.WORKSPACE}/.m2-cache || true"
-            changedBackend.each { svc -> sh "rm -rf ${env.WORKSPACE}/.m2-repo-${svc} || true" }
+
+        // Stage để đo lường thời gian pipeline (optional)
+        stage('Pipeline Metrics') {
+            steps {
+                script {
+                    def duration = currentBuild.duration / 1000
+                    echo "⏱️ Pipeline completed in ${duration} seconds"
+                    // Có thể gửi metrics về CloudWatch/Grafana nếu cần
+                }
+            }
+        }
+    }
+
+    // ============================================================
+    // 5. POST ACTIONS
+    // ============================================================
+    post {
+        always {
+            // Archive test results
+            junit allowEmptyResults: true,
+                  testResults: '**/target/surefire-reports/*.xml, **/target/failsafe-reports/*.xml'
+            // Archive coverage reports
+            archiveArtifacts artifacts: '**/target/site/jacoco/jacoco.xml, **/coverage/coverage-final.json',
+                         allowEmptyArchive: true
             cleanWs()
-            if (currentBuild.result == 'SUCCESS' && !skipBuild) {
-                echo "✅ Pipeline SUCCESS!"
-            } else if (!skipBuild) {
-                echo "❌ Pipeline FAILED!"
-            }
+            echo "[INFO] Workspace cleaned."
+        }
+        failure {
+            // Thông báo Slack (nếu đã cấu hình)
+            slackSend channel: '#ci-cd',
+                      color: 'danger',
+                      message: "❌ Pipeline FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}\nBranch: ${env.BRANCH_NAME}\nCommit: ${env.GIT_COMMIT_SHORT}"
+            echo "[ERROR] Pipeline failed. Check logs."
+        }
+        success {
+            slackSend channel: '#ci-cd',
+                      color: 'good',
+                      message: "✅ Pipeline PASSED: ${env.JOB_NAME} #${env.BUILD_NUMBER}\nBranch: ${env.BRANCH_NAME}"
+            echo "[SUCCESS] Pipeline completed."
         }
     }
 }
