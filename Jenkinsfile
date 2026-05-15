@@ -131,10 +131,10 @@ pipeline {
                         
                         // Set environment variables cho các stage sau
                         def affectedModules = affected.join(',')
-                        def shouldBuild = (affected && !affected.isEmpty()) || commonLibChanged
+                        def shouldBuildFlag = (affectedModules?.trim() ? true : false) || commonLibChanged
                         env.AFFECTED_MODULES = affectedModules
                         env.COMMON_LIB_CHANGED = commonLibChanged.toString()
-                        env.SHOULD_BUILD = shouldBuild ? 'true' : 'false'
+                        env.SHOULD_BUILD = shouldBuildFlag ? 'true' : 'false'
                         
                         echo "[RESULT] Affected modules: ${affectedModules ?: 'none'}"
                         echo "[RESULT] Common lib changed: ${env.COMMON_LIB_CHANGED}"
