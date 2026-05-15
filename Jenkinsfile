@@ -189,7 +189,13 @@ pipeline {
                     
                     sh """
                         set -euo pipefail
-                        ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1
+                        if [ -f .gitleaksignore ]; then
+                            echo "[INFO] Using .gitleaksignore"
+                            ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1 --exclude-path=.gitleaksignore
+                        else
+                            echo "[WARN] .gitleaksignore not found, running without ignore"
+                            ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1
+                        fi
                     """
                 }
                 echo "[OK] Gitleaks passed."
