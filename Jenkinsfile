@@ -71,6 +71,10 @@ pipeline {
         SONAR_HOST_URL  = 'https://sonarcloud.io'
 
         SNYK_CREDENTIALS_ID = 'snyk-api-token-yas'
+
+        SLACK_TEAM_DOMAIN   = 'pnt-8oe4827'
+        SLACK_CHANNEL       = '#cicd-notifications'
+        SLACK_CREDENTIALS_ID = 'slack-bot-token-yas'
         
         // Module lists are set in Smart Routing
     }
@@ -572,7 +576,9 @@ pipeline {
                 
                 // Slack notification với error handling
                 try {
-                    slackSend channel: '#ci-cd',
+                    slackSend teamDomain: env.SLACK_TEAM_DOMAIN,
+                              channel: env.SLACK_CHANNEL,
+                              tokenCredentialId: env.SLACK_CREDENTIALS_ID,
                               color: 'danger',
                               message: "❌ Pipeline FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n" +
                                        "Branch: ${env.BRANCH_NAME}\n" +
@@ -589,7 +595,9 @@ pipeline {
                 echo "[SUCCESS] === PIPELINE COMPLETED SUCCESSFULLY ==="
                 
                 try {
-                    slackSend channel: '#ci-cd',
+                    slackSend teamDomain: env.SLACK_TEAM_DOMAIN,
+                              channel: env.SLACK_CHANNEL,
+                              tokenCredentialId: env.SLACK_CREDENTIALS_ID,
                               color: 'good',
                               message: "✅ Pipeline PASSED: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n" +
                                        "Branch: ${env.BRANCH_NAME}\n" +
@@ -604,11 +612,17 @@ pipeline {
         unstable {
             script {
                 echo "[WARN] === PIPELINE COMPLETED WITH WARNINGS ==="
-                slackSend channel: '#ci-cd',
-                          color: 'warning',
-                          message: "⚠️ Pipeline UNSTABLE: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n" +
-                                   "Branch: ${env.BRANCH_NAME}\n" +
-                                   "Check test failures or quality warnings"
+                try {
+                    slackSend teamDomain: env.SLACK_TEAM_DOMAIN,
+                              channel: env.SLACK_CHANNEL,
+                              tokenCredentialId: env.SLACK_CREDENTIALS_ID,
+                              color: 'warning',
+                              message: "⚠️ Pipeline UNSTABLE: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n" +
+                                       "Branch: ${env.BRANCH_NAME}\n" +
+                                       "Check test failures or quality warnings"
+                } catch (Exception e) {
+                    echo "[WARN] Failed to send Slack notification: ${e.message}"
+                }
             }
         }
     }
