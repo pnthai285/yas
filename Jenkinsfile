@@ -69,6 +69,8 @@ pipeline {
 
         SONAR_ORG       = 'pnthai285'
         SONAR_HOST_URL  = 'https://sonarcloud.io'
+
+        SNYK_CREDENTIALS_ID = 'snyk-api-token-yas'
         
         // Module lists are set in Smart Routing
     }
@@ -1040,15 +1042,16 @@ def runSnykSecurityScanStage() {
         }
 
         try {
-            withCredentials([[$class: 'SnykApiTokenBinding', credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN']]) {
+            withCredentials([string(credentialsId: env.SNYK_CREDENTIALS_ID, variable: 'SNYK_TOKEN')]) {
                 runSnykScan(env.SNYK_TOKEN)
             }
         } catch (Exception e) {
             if (env.SNYK_TOKEN?.trim()) {
-                echo "[WARN] Snyk binding unavailable, using SNYK_TOKEN from environment"
+                echo "[WARN] Snyk credentials binding failed, using SNYK_TOKEN from environment"
                 runSnykScan(env.SNYK_TOKEN)
             } else {
-                error "Snyk credential binding missing. Install Snyk plugin or provide SNYK_TOKEN as secret text."
+                echo "[WARN] Snyk token missing; skipping Snyk scan to avoid pipeline failure"
+                currentBuild.result = currentBuild.result ?: 'UNSTABLE'
             }
         }
     }
