@@ -211,10 +211,20 @@ pipeline {
                             set -euo pipefail
                             echo "[ERROR] Gitleaks found leaks. Files:"
                             if [ -f ${reportPath} ]; then
-                                grep -o '"File":"[^"]*"' ${reportPath} | \
-                                    sed -E 's/"File":"([^"]*)"/\1/' | \
-                                    sort -u | \
-                                    sed 's/^/- /'
+                                python - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("${reportPath}")
+data = json.loads(path.read_text(encoding="utf-8"))
+
+# Gitleaks JSON can be a list or have a "leaks" key depending on version.
+leaks = data.get("leaks", data) if isinstance(data, dict) else data
+files = sorted({item.get("File", "") for item in leaks if isinstance(item, dict) and item.get("File")})
+
+for f in files:
+    print(f"- {f}")
+PY
                             else
                                 echo "[ERROR] Report not found: ${reportPath}"
                             fi
