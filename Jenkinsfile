@@ -87,6 +87,11 @@ pipeline {
                     
                     try {
                         env.GIT_COMMIT_SHORT = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : 'unknown'
+                        env.BRANCH_NAME = env.BRANCH_NAME?.trim()
+                            ?: env.CHANGE_BRANCH?.trim()
+                            ?: (env.GIT_BRANCH ? env.GIT_BRANCH.replaceFirst(/^origin\//, '').trim() : null)
+                            ?: 'detached'
+                        env.BRANCH_NAME = env.BRANCH_NAME.replaceAll('/', '-')
                         // Fetch target branch để có merge base chính xác
                         sh "git fetch origin ${CHANGE_TARGET}:refs/remotes/origin/${CHANGE_TARGET} --depth=50"
                         
@@ -758,7 +763,7 @@ pipeline {
                             
                             try {
                                 timeout(time: 10, unit: 'MINUTES') {
-                                    withCredentials([string(credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN')]) {
+                                    withCredentials([[$class: 'SnykApiTokenBinding', credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN']]) {
                                         
                                         def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
                                         if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
@@ -939,6 +944,27 @@ pipeline {
                             try {
                                 // Chỉ save nếu build thành công
                                 if (currentBuild.result in [null, 'SUCCESS', 'UNSTABLE']) {
+                                    if (!env.BRANCH_NAME?.trim()) {
+                                        env.BRANCH_NAME = env.CHANGE_BRANCH?.trim()
+                                            ?: (env.GIT_BRANCH ? env.GIT_BRANCH.replaceFirst(/^origin\//, '').trim() : null)
+                                            ?: 'detached'
+                                        env.BRANCH_NAME = env.BRANCH_NAME.replaceAll('/', '-')
+                                        echo "[WARN] BRANCH_NAME not set, using '${env.BRANCH_NAME}'"
+                                    }
+                                    if (!env.CACHE_KEY?.trim()) {
+                                        env.CACHE_KEY = sh(
+                                            script: """
+                                                find . '(' -name 'pom.xml' -o -name 'package.json' ')' -exec md5sum {} + 2>/dev/null |
+                                                md5sum | awk '{print \$1}'
+                                            """,
+                                            returnStdout: true,
+                                            label: 'generate-cache-key-fallback'
+                                        ).trim()
+                                    }
+                                    if (!env.CACHE_KEY?.trim()) {
+                                        echo "[WARN] Cache key is empty, skipping cache save to S3"
+                                        return
+                                    }
                                     sh """
                                         echo "[INFO] Creating cache archive for branch ${BRANCH_NAME}"
                                         tar -czf cache.tar.gz -C ~/.m2 repository 2>/dev/null || true
