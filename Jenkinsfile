@@ -151,7 +151,40 @@ pipeline {
         }
 
         // ============================================================
-        // STAGE 2: SKIP HEAVY BUILD (Nếu không có thay đổi)
+        // STAGE 2: GITLEAKS SCAN (Security - chạy trên built-in)
+        // ============================================================
+        stage('Gitleaks Scan') {
+            when { expression { env.SHOULD_BUILD == 'true' } }
+            agent { label 'built-in' }
+            steps {
+                script {
+                    def gitleaksVersion = '8.18.0'
+                    def gitleaksBin = "${WORKSPACE}/gitleaks"
+                    
+                    sh """
+                        set -e
+                        if ! command -v gitleaks &> /dev/null && [ ! -f ${gitleaksBin} ]; then
+                            echo "[INFO] Downloading gitleaks ${gitleaksVersion}..."
+                            curl -sL "https://github.com/gitleaks/gitleaks/releases/download/v${gitleaksVersion}/gitleaks_${gitleaksVersion}_linux_x64.tar.gz" -o gitleaks.tar.gz
+                            tar -xzf gitleaks.tar.gz gitleaks
+                            chmod +x gitleaks
+                            mv gitleaks ${gitleaksBin}
+                            rm -f gitleaks.tar.gz
+                        else
+                            echo "[INFO] Gitleaks binary already available"
+                        fi
+                    """
+                    
+                    sh """
+                        ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1
+                    """
+                }
+                echo "[OK] Gitleaks passed."
+            }
+        }
+
+        // ============================================================
+        // STAGE 3: SKIP HEAVY BUILD (Nếu không có thay đổi)
         // ============================================================
         stage('Skip Heavy Build') {
             when { expression { env.SHOULD_BUILD == 'false' } }
@@ -163,7 +196,7 @@ pipeline {
         }
 
         // ============================================================
-        // STAGE 3: HEAVY BUILD TRÊN SPOT AGENT (NVMe)
+        // STAGE 4: HEAVY BUILD TRÊN SPOT AGENT (NVMe)
         // ============================================================
         stage('Heavy Build') {
             when { expression { env.SHOULD_BUILD == 'true' } }
@@ -171,38 +204,7 @@ pipeline {
             
             stages {
                 // ------------------------------------------------
-                // 3.1: Gitleaks Scan (Docker on spot agent)
-                // ------------------------------------------------
-                stage('Gitleaks Scan') {
-                    steps {
-                        script {
-                            echo "[INFO] === GITLEAKS SCAN STARTED ==="
-                            
-                            try {
-                                // Run gitleaks in Docker for consistent environment
-                                timeout(time: 5, unit: 'MINUTES') {
-                                    sh '''
-                                        echo "[INFO] Running Gitleaks on commit ${GIT_COMMIT_SHORT}..."
-                                        docker run --rm -v ${WORKSPACE}:/path zricethezav/gitleaks:latest \
-                                            detect --source=/path --verbose --redact --exit-code=1
-                                    '''
-                                }
-                                echo "[OK] Gitleaks passed - no secrets detected."
-                                
-                            } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
-                                echo "[ERROR] Gitleaks scan timed out"
-                                throw e
-                            } catch (Exception e) {
-                                echo "[ERROR] Gitleaks scan failed: ${e.message}"
-                                // Fail pipeline vì security là critical
-                                error "❌ Gitleaks scan failed: ${e.message}. Pipeline aborted for security."
-                            }
-                        }
-                    }
-                }
-                
-                // ------------------------------------------------
-                // 3.2: Checkout & Setup AWS config
+                // 4.1: Checkout & Setup AWS config
                 // ------------------------------------------------
                 stage('Checkout & Setup') {
                     steps {
