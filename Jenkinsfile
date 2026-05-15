@@ -12,9 +12,7 @@ pipeline {
     agent none
 
     options {
-        // ✅ Retry ở Master level - Critical cho Spot interruption handling
-        retry(3)
-        
+        // ✅ Retry handled at Heavy Build stage
         // ✅ Chống zombie pipeline
         timeout(time: 60, unit: 'MINUTES')
         
@@ -245,6 +243,7 @@ pipeline {
         stage('Heavy Build') {
             when { expression { env.SHOULD_BUILD == 'true' } }
             agent { label 'aws-spot-nvme' }
+            options { retry(3) }
             
             stages {
                 // ------------------------------------------------
@@ -652,6 +651,7 @@ pipeline {
                                     }
                                     
                                     def projectKey = PROJECT_KEYS.readLines()
+                                        .collect { it.trim() }
                                         .find { it.startsWith("${module}:") }
                                         ?.split(':')
                                         ?.getAt(1)
