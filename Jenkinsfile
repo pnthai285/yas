@@ -80,7 +80,7 @@ pipeline {
         // STAGE 1: SMART ROUTING (Chạy trên Master - nhẹ)
         // ============================================================
         stage('Smart Routing') {
-            agent { label 'master' }
+            agent { label 'built-in' }
             steps {
                 script {
                     echo "[INFO] === SMART ROUTING STARTED ==="
@@ -153,7 +153,7 @@ pipeline {
         // ============================================================
         stage('Gitleaks Scan') {
             when { expression { env.SHOULD_BUILD == 'true' } }
-            agent { label 'master' }
+            agent { label 'built-in' }
             steps {
                 script {
                     echo "[INFO] === GITLEAKS SCAN STARTED ==="
@@ -957,7 +957,7 @@ pipeline {
     post {
         always {
             script {
-                node('master') {
+                node('built-in') {
                     echo "[INFO] === POST ACTIONS: CLEANUP ==="
                     
                     try {
