@@ -956,26 +956,28 @@ pipeline {
     // ============================================================
     post {
         always {
-            node('master') {
-                echo "[INFO] === POST ACTIONS: CLEANUP ==="
-                
-                try {
-                    // Archive test results (final fallback)
-                    junit allowEmptyResults: true,
-                          testResults: '**/target/surefire-reports/*.xml, **/target/failsafe-reports/*.xml',
-                          skipPublishingChecks: true
+            script {
+                node('master') {
+                    echo "[INFO] === POST ACTIONS: CLEANUP ==="
                     
-                    // Archive coverage reports
-                    archiveArtifacts artifacts: '**/target/site/jacoco/jacoco.xml, **/coverage/coverage-final.json',
-                                 allowEmptyArchive: true,
-                                 fingerprint: true
-                    
-                    // Clean workspace
-                    cleanWs(disableDeferredWipeout: true, deleteDirs: true)
-                    echo "[INFO] Workspace cleaned."
-                    
-                } catch (Exception e) {
-                    echo "[WARN] Post-action cleanup failed: ${e.message}"
+                    try {
+                        // Archive test results (final fallback)
+                        junit allowEmptyResults: true,
+                              testResults: '**/target/surefire-reports/*.xml, **/target/failsafe-reports/*.xml',
+                              skipPublishingChecks: true
+                        
+                        // Archive coverage reports
+                        archiveArtifacts artifacts: '**/target/site/jacoco/jacoco.xml, **/coverage/coverage-final.json',
+                                     allowEmptyArchive: true,
+                                     fingerprint: true
+                        
+                        // Clean workspace
+                        cleanWs(disableDeferredWipeout: true, deleteDirs: true)
+                        echo "[INFO] Workspace cleaned."
+                        
+                    } catch (Exception e) {
+                        echo "[WARN] Post-action cleanup failed: ${e.message}"
+                    }
                 }
             }
         }
