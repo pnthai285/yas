@@ -615,8 +615,9 @@ pipeline {
                                                  allowEmptyArchive: true,
                                                  fingerprint: true
 
-                                     // Publish JaCoCo report for Jenkins charts (Coverage API plugin)
-                                     recordCoverage tools: [[parser: 'JACOCO', pattern: '**/target/site/jacoco/jacoco.xml']]
+                                    // Publish JaCoCo report for Jenkins charts (Coverage API plugin)
+                                    recordCoverage tools: [[parser: 'JACOCO', pattern: '**/target/site/jacoco/jacoco.xml']],
+                                                   sourceDirectories: [[path: '.']]
                                 } catch (Exception e) {
                                     echo "[WARN] Failed to archive integration test artifacts: ${e.message}"
                                 }
@@ -640,6 +641,7 @@ pipeline {
                         script {
                             echo "[INFO] === SONARQUBE ANALYSIS STARTED ==="
                             
+                            def sonarRan = false
                             try {
                                 def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
                                 if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
@@ -663,7 +665,6 @@ pipeline {
                                     }
                                     
                                     echo "[INFO] Analyzing module: ${module} -> ${projectKey}"
-                                    sonarRan = true
                                     
                                     // Timeout cho Sonar scan
                                     timeout(time: 10, unit: 'MINUTES') {
@@ -671,7 +672,7 @@ pipeline {
                                             retryWithBackoff(2, 5) {
                                                 sh """
                                                     /opt/maven/bin/mvn sonar:sonar \
-                                                        -pl ${module} \
+                                                        -pl ${module} -am \
                                                         -Dsonar.projectKey=${projectKey} \
                                                         -Dsonar.projectName=${module} \
                                                         -Dsonar.sources=${module}/src/main/java \
@@ -684,6 +685,7 @@ pipeline {
                                             }
                                         }
                                     }
+                                    sonarRan = true
                                 }
                             } catch (Exception e) {
                                 echo "[ERROR] SonarQube analysis failed: ${e.message}"
