@@ -612,7 +612,10 @@ pipeline {
                                         continue  // ✅ Dùng continue thay vì return
                                     }
                                     
-                                    def projectKey = PROJECT_KEYS.find { it.startsWith("${module}:") }?.split(':')?[1]
+                                    def projectKey = PROJECT_KEYS.readLines()
+                                        .find { it.startsWith("${module}:") }
+                                        ?.split(':')
+                                        ?.getAt(1)
                                     if (!projectKey) {
                                         echo "[WARN] No Sonar project key for module: ${module}, skipping"
                                         continue
