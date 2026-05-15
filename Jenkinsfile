@@ -6,6 +6,7 @@
 // ============================================================
 
 def isPR = false
+def maxInfraRetry = 1
 def buildErrors = []
 
 pipeline {
@@ -84,79 +85,7 @@ pipeline {
             agent { label 'built-in' }
             steps {
                 script {
-                    echo "[INFO] === SMART ROUTING STARTED ==="
-                    echo "[INFO] Target branch: ${CHANGE_TARGET}"
-                    env.AFFECTED_MODULES = ''
-                    env.COMMON_LIB_CHANGED = 'false'
-                    env.SHOULD_BUILD = 'false'
-                    env.SONAR_RAN = 'false'
-                    isPR = env.CHANGE_ID != null
-                    
-                    try {
-                        env.GIT_COMMIT_SHORT = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : 'unknown'
-                        env.BRANCH_NAME = env.BRANCH_NAME?.trim()
-                            ?: env.CHANGE_BRANCH?.trim()
-                            ?: (env.GIT_BRANCH ? env.GIT_BRANCH.replaceFirst(/^origin\//, '').trim() : null)
-                            ?: 'detached'
-                        env.BRANCH_NAME = env.BRANCH_NAME.replaceAll('/', '-')
-                        // Fetch target branch để có merge base chính xác
-                        sh "git fetch origin ${CHANGE_TARGET}:refs/remotes/origin/${CHANGE_TARGET} --depth=50"
-                        
-                        // ✅ Git diff 3-dots: so sánh từ merge base, không bị nhiễm code người khác
-                        def changedFiles = sh(
-                            script: "git diff --name-only origin/${CHANGE_TARGET}...HEAD",
-                            returnStdout: true,
-                            label: 'git-diff'
-                        ).trim().split('\n').findAll { it && !it.isEmpty() }
-                        
-                        echo "[DEBUG] Changed files: ${changedFiles.take(10)}${changedFiles.size() > 10 ? '...' : ''}"
-                        
-                        // Tìm danh sách modules (pom.xml hoặc package.json)
-                        def allModules = sh(
-                            script: '''find . -maxdepth 2 '(' -name 'pom.xml' -o -name 'package.json' ')' -printf '%h\n' 2>/dev/null | sed 's|^[.]/||' | grep -v '^[.]$' | sort -u''',
-                            returnStdout: true,
-                            label: 'find-modules'
-                        ).trim().split('\n').findAll { it && !it.isEmpty() }
-                        
-                        // Tính toán affected modules
-                        def affected = []
-                        def commonLibChanged = false
-                        
-                        changedFiles.each { file ->
-                            // Check common-library change (hiệu ứng domino)
-                            if (file.startsWith('common-library/')) {
-                                commonLibChanged = true
-                                echo "[INFO] common-library changed - will build all dependents"
-                            }
-                            
-                            // Find which module this file belongs to
-                            def module = allModules.find { m -> 
-                                file.startsWith("${m}/") || file == "${m}/pom.xml" || file == "${m}/package.json" 
-                            }
-                            
-                            if (module && !affected.contains(module)) {
-                                affected << module
-                                echo "[INFO] Affected module: ${module}"
-                            }
-                        }
-                        
-                        // Set environment variables cho các stage sau
-                        def affectedModules = affected.join(',')
-                        def shouldBuildFlag = (affectedModules?.trim() ? true : false) || commonLibChanged
-                        env.AFFECTED_MODULES = affectedModules
-                        env.COMMON_LIB_CHANGED = commonLibChanged.toString()
-                        env.SHOULD_BUILD = shouldBuildFlag ? 'true' : 'false'
-                        
-                        echo "[RESULT] Affected modules: ${affectedModules ?: 'none'}"
-                        echo "[RESULT] Common lib changed: ${env.COMMON_LIB_CHANGED}"
-                        echo "[RESULT] Should build: ${env.SHOULD_BUILD}"
-                        
-                    } catch (Exception e) {
-                        echo "[ERROR] Smart Routing failed: ${e.message}"
-                        // Vẫn cho phép pipeline tiếp tục với SHOULD_BUILD=true để không bỏ sót build
-                        env.SHOULD_BUILD = 'true'
-                        throw e
-                    }
+                    runSmartRoutingStage()
                 }
             }
         }
@@ -168,72 +97,7 @@ pipeline {
             when { expression { env.SHOULD_BUILD == 'true' } }
             agent { label 'built-in' }
             steps {
-                script {
-                    def gitleaksVersion = '8.18.0'
-                    def gitleaksBin = "${WORKSPACE}/gitleaks"
-                    
-                    sh """
-                        set -euo pipefail
-                        
-                        if command -v gitleaks &> /dev/null; then
-                            echo "[INFO] Gitleaks found in PATH: \$(command -v gitleaks)"
-                        fi
-                        
-                        if [ ! -f ${gitleaksBin} ]; then
-                            echo "[INFO] Downloading gitleaks ${gitleaksVersion}..."
-                            curl -fL "https://github.com/gitleaks/gitleaks/releases/download/v${gitleaksVersion}/gitleaks_${gitleaksVersion}_linux_x64.tar.gz" -o gitleaks.tar.gz
-                            tar -xzf gitleaks.tar.gz gitleaks
-                            chmod +x gitleaks
-                            rm -f gitleaks.tar.gz
-                        else
-                            echo "[INFO] Gitleaks binary already available at ${gitleaksBin}"
-                        fi
-                        
-                        if [ ! -x ${gitleaksBin} ]; then
-                            echo "[ERROR] Gitleaks binary is not executable: ${gitleaksBin}"
-                            exit 1
-                        fi
-                        
-                        echo "[INFO] Gitleaks version:"
-                        ${gitleaksBin} version
-                    """
-                    
-                    def reportPath = "${WORKSPACE}/gitleaks-report.json"
-                    def scanStatus = sh(
-                        script: """
-                            set -euo pipefail
-                            if [ -f .gitleaks.toml ]; then
-                                echo "[INFO] Using .gitleaks.toml"
-                                ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1 \
-                                    --config=.gitleaks.toml \
-                                    --report-format=csv --report-path=${reportPath} \
-                                    --no-banner --no-color
-                            else
-                                echo "[WARN] .gitleaks.toml not found, running without config"
-                                ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1 \
-                                    --report-format=csv --report-path=${reportPath} \
-                                    --no-banner --no-color
-                            fi
-                        """,
-                        returnStatus: true
-                    )
-                    if (scanStatus != 0) {
-                        sh """
-                            set -euo pipefail
-                            echo "[ERROR] Gitleaks found leaks. Files:"
-                            if [ -f ${reportPath} ]; then
-                                awk -F, 'NR>1{print \$3}' ${reportPath} | \
-                                    sed -E 's/^"//;s/"\$//' | \
-                                    sort -u | \
-                                    sed 's/^/- /'
-                            else
-                                echo "[ERROR] Report not found: ${reportPath}"
-                            fi
-                        """
-                        error "❌ Gitleaks scan failed: leaks found."
-                    }
-                }
-                echo "[OK] Gitleaks passed."
+                script { runGitleaksStage() }
             }
         }
 
@@ -255,13 +119,13 @@ pipeline {
         stage('Heavy Build') {
             when { expression { env.SHOULD_BUILD == 'true' } }
             agent { label 'aws-spot-nvme' }
-            options { retry(3) }
             
             stages {
                 // ------------------------------------------------
                 // 4.1: Checkout & Setup AWS config
                 // ------------------------------------------------
                 stage('Checkout & Setup') {
+                    options { retry(maxInfraRetry) }
                     steps {
                         script {
                             echo "[INFO] === CHECKOUT & SETUP STARTED ==="
@@ -277,15 +141,13 @@ pipeline {
                                 env.CACHE_BUCKET = "yas-cache-${env.ACCOUNT_ID}"
                                 
                                 // Lấy Hub IP từ SSM với retry
-                                env.HUB_IP = retryWithBackoff(3, 5) {
-                                    sh(script: """
-                                        aws ssm get-parameter \
-                                            --name /yas/hub/private_ip \
-                                            --region us-east-1 \
-                                            --query Parameter.Value \
-                                            --output text
-                                    """, returnStdout: true, label: 'get-hub-ip').trim()
-                                }
+                                env.HUB_IP = sh(script: """
+                                    aws ssm get-parameter \
+                                        --name /yas/hub/private_ip \
+                                        --region us-east-1 \
+                                        --query Parameter.Value \
+                                        --output text
+                                """, returnStdout: true, label: 'get-hub-ip').trim()
                                 
                                 env.REGISTRY = "${env.HUB_IP}:5000"
                                 
@@ -311,7 +173,7 @@ pipeline {
                             echo "[INFO] === VERIFYING REGISTRY CONNECTIVITY ==="
                             
                             try {
-                                retryWithBackoff(3, 3) {
+                                retry(maxInfraRetry) {
                                     sh """
                                         echo "[INFO] Testing registry connection to ${env.HUB_IP}:5000"
                                         curl -f --max-time 10 --retry 2 --retry-delay 2 \
@@ -332,6 +194,7 @@ pipeline {
                 // 4.3: Restore Maven Cache từ S3 (via Gateway Endpoint)
                 // ------------------------------------------------
                 stage('Restore Maven Cache') {
+                    options { retry(maxInfraRetry) }
                     steps {
                         script {
                             echo "[INFO] === RESTORING MAVEN CACHE ==="
@@ -417,63 +280,7 @@ pipeline {
                     steps {
                         script {
                             echo "[INFO] === COMPILE & PACKAGE STARTED ==="
-                            
-                            runStageOrWarn('Compile & Package') {
-                                def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
-                                
-                                // Nếu common-library thay đổi, build tất cả dependents
-                                if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
-                                    modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
-                                    echo "[INFO] Common lib changed - will compile all modules"
-                                }
-                                
-                                if (modules.isEmpty()) {
-                                    echo "[WARN] No modules to compile"
-                                    return
-                                }
-                                
-                                // Tách frontend/backend
-                                def frontendModules = modules.findAll { it in ['backoffice', 'storefront'] }
-                                def backendModules = modules.findAll { !(it in ['backoffice', 'storefront']) }
-                                
-                                // Build frontend modules (npm)
-                                frontendModules.each { module ->
-                                    echo "[INFO] Installing dependencies for frontend: ${module}"
-                                    dir(module) {
-                                        retryWithBackoff(2, 5) {
-                                            sh """
-                                                npm ci --prefer-offline --no-audit --loglevel=error
-                                            """
-                                        }
-                                    }
-                                }
-                                
-                                // Build backend modules (Maven reactor - single command)
-                                if (backendModules) {
-                                    def usesJava21 = backendModules.any { it.contains('automation-ui') }
-                                    def javaHome = usesJava21 
-                                        ? '/usr/lib/jvm/java-21-amazon-corretto'
-                                        : '/usr/lib/jvm/java-25-amazon-corretto'
-                                    
-                                    def mvnCmd = "/opt/maven/bin/mvn clean compile -T 1C -pl ${backendModules.join(',')} -am"
-                                    if (env.COMMON_LIB_CHANGED == 'true') {
-                                        mvnCmd += " -amd"
-                                        echo "[INFO] Added -amd flag for common-library dependents"
-                                    }
-                                    
-                                    echo "[CMD] ${mvnCmd}"
-                                    
-                                    retryWithBackoff(2, 10) {
-                                        sh """
-                                            export JAVA_HOME=${javaHome}
-                                            export PATH=${javaHome}/bin:\$PATH
-                                            ${mvnCmd}
-                                        """
-                                    }
-                                }
-                                
-                                echo "[OK] Compile & Package completed"
-                            }
+                            runStageOrWarn('Compile & Package') { runCompileAndPackageStage() }
                         }
                     }
                 }
@@ -485,49 +292,7 @@ pipeline {
                     steps {
                         script {
                             echo "[INFO] === UNIT TESTS STARTED ==="
-                            
-                            runStageOrWarn('Unit Tests') {
-                                def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
-                                if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
-                                    modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
-                                }
-                                if (modules.isEmpty()) {
-                                    echo "[WARN] No modules to test"
-                                    return
-                                }
-                                
-                                def frontendModules = modules.findAll { it in ['backoffice', 'storefront'] }
-                                def backendModules = modules.findAll { !(it in ['backoffice', 'storefront']) }
-                                
-                                // Frontend unit tests
-                                frontendModules.each { module ->
-                                    echo "[INFO] Running unit tests for frontend: ${module}"
-                                    dir(module) {
-                                        sh """
-                                            npm test -- --coverage --watchAll=false --passWithNoTests
-                                        """
-                                    }
-                                }
-                                
-                                // Backend unit tests (Maven Surefire)
-                                if (backendModules) {
-                                    def usesJava21 = backendModules.any { it.contains('automation-ui') }
-                                    def javaHome = usesJava21 
-                                        ? '/usr/lib/jvm/java-21-amazon-corretto'
-                                        : '/usr/lib/jvm/java-25-amazon-corretto'
-                                    
-                                    def mvnCmd = "/opt/maven/bin/mvn test -T 1C -pl ${backendModules.join(',')}"
-                                    if (env.COMMON_LIB_CHANGED == 'true') mvnCmd += " -amd"
-                                    
-                                    retryWithBackoff(2, 10) {
-                                        sh """
-                                            export JAVA_HOME=${javaHome}
-                                            export PATH=${javaHome}/bin:\$PATH
-                                            ${mvnCmd}
-                                        """
-                                    }
-                                }
-                            }
+                            runStageOrWarn('Unit Tests') { runUnitTestsStage() }
                         }
                     }
                     post {
@@ -553,48 +318,7 @@ pipeline {
                     steps {
                         script {
                             echo "[INFO] === INTEGRATION TESTS STARTED ==="
-                            
-                            runStageOrWarn('Integration Tests') {
-                                def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
-                                if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
-                                    modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
-                                }
-                                
-                                // Chỉ backend có integration tests
-                                def backendModules = modules.findAll { 
-                                    !(it in ['backoffice', 'storefront']) && fileExists("${it}/pom.xml")
-                                }
-                                
-                                if (!backendModules) {
-                                    echo "[INFO] No backend modules for integration tests"
-                                    return
-                                }
-                                
-                                def usesJava21 = backendModules.any { it.contains('automation-ui') }
-                                def javaHome = usesJava21 
-                                    ? '/usr/lib/jvm/java-21-amazon-corretto'
-                                    : '/usr/lib/jvm/java-25-amazon-corretto'
-                                
-                                def mvnCmd = "/opt/maven/bin/mvn verify -DskipUnitTests -T 1C -pl ${backendModules.join(',')} -am"
-                                if (env.COMMON_LIB_CHANGED == 'true') mvnCmd += " -amd"
-                                if (env.CHANGE_ID) {
-                                    mvnCmd += " -fae"  // Fail-At-End cho PR
-                                    echo "[INFO] PR mode: -fae enabled"
-                                }
-                                
-                                echo "[CMD] ${mvnCmd}"
-                                
-                                // Integration tests có thể lâu, dùng timeout
-                                timeout(time: 30, unit: 'MINUTES') {
-                                    retryWithBackoff(2, 15) {
-                                        sh """
-                                            export JAVA_HOME=${javaHome}
-                                            export PATH=${javaHome}/bin:\$PATH
-                                            ${mvnCmd}
-                                        """
-                                    }
-                                }
-                            }
+                            runStageOrWarn('Integration Tests') { runIntegrationTestsStage() }
                         }
                     }
                     post {
@@ -636,60 +360,7 @@ pipeline {
                     steps {
                         script {
                             echo "[INFO] === SONARQUBE ANALYSIS STARTED ==="
-                            
-                            def sonarRan = false
-                            runStageOrWarn('SonarQube Analysis') {
-                                try {
-                                    def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
-                                    if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
-                                        modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
-                                    }
-                                    
-                                    // Chỉ scan Java modules
-                                    modules.each { module ->
-                                        if (!fileExists("${module}/pom.xml")) {
-                                            echo "[INFO] Skipping Sonar for non-Java module: ${module}"
-                                            return
-                                        }
-                                        
-                                        def keyLine = PROJECT_KEYS.readLines()
-                                            .collect { it.trim() }
-                                            .find { it.startsWith("${module}:") }
-                                        def projectKey = keyLine ? keyLine.substring(keyLine.indexOf(':') + 1).trim() : null
-                                        if (!projectKey) {
-                                            echo "[WARN] No Sonar project key for module: ${module}, skipping"
-                                            return
-                                        }
-                                        
-                                        echo "[INFO] Analyzing module: ${module} -> ${projectKey}"
-                                        
-                                        // Timeout cho Sonar scan
-                                        timeout(time: 10, unit: 'MINUTES') {
-                                            withSonarQubeEnv('sonarcloud') {
-                                                retryWithBackoff(2, 5) {
-                                                    sh """
-                                                        /opt/maven/bin/mvn sonar:sonar \
-                                                            -pl ${module} -am \
-                                                            -Dsonar.projectKey=${projectKey} \
-                                                            -Dsonar.projectName=${module} \
-                                                            -Dsonar.organization=${SONAR_ORG} \
-                                                            -Dsonar.host.url=${SONAR_HOST_URL} \
-                                                            -Dsonar.sources=src/main/java \
-                                                            -Dsonar.tests=src/test/java \
-                                                            -Dsonar.java.binaries=target/classes \
-                                                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
-                                                            -Dsonar.scm.disabled=true \
-                                                            -Dsonar.login=\${SONAR_AUTH_TOKEN}
-                                                    """
-                                                }
-                                            }
-                                        }
-                                        sonarRan = true
-                                    }
-                                } finally {
-                                    env.SONAR_RAN = sonarRan ? 'true' : 'false'
-                                }
-                            }
+                            runStageOrWarn('SonarQube Analysis') { runSonarAnalysisStage() }
                         }
                     }
                 }
@@ -751,55 +422,7 @@ pipeline {
                     steps {
                         script {
                             echo "[INFO] === SNYK SECURITY SCAN STARTED ==="
-                            
-                            timeout(time: 10, unit: 'MINUTES') {
-                                def runSnykScan = { token ->
-                                    def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
-                                    if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
-                                        modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
-                                    }
-
-                                    modules.each { module ->
-                                        def scanDir = (module == 'common-library') ? '.' : module
-                                        def scanPath = (scanDir == '.') ? "${WORKSPACE}" : "${WORKSPACE}/${scanDir}"
-
-                                        echo "[INFO] Running Snyk scan for: ${module}"
-
-                                        // Snyk trong Docker với volume mount
-                                        retryWithBackoff(2, 5) {
-                                            sh """
-                                                docker run --rm \
-                                                    -v ${scanPath}:/app:ro \
-                                                    -e SNYK_TOKEN=${token} \
-                                                    snyk/snyk:alpine \
-                                                    snyk test --all-projects \
-                                                    --severity-threshold=high \
-                                                    --fail-on=high,critical \
-                                                    --json-file-output=/app/snyk-report.json
-                                            """
-                                        }
-
-                                        // Archive Snyk report nếu có
-                                        if (fileExists("${scanDir}/snyk-report.json")) {
-                                            archiveArtifacts artifacts: "${scanDir}/snyk-report.json",
-                                                         allowEmptyArchive: true
-                                        }
-                                    }
-                                }
-
-                                try {
-                                    withCredentials([[$class: 'SnykApiTokenBinding', credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN']]) {
-                                        runSnykScan(env.SNYK_TOKEN)
-                                    }
-                                } catch (Exception e) {
-                                    if (env.SNYK_TOKEN?.trim()) {
-                                        echo "[WARN] Snyk binding unavailable, using SNYK_TOKEN from environment"
-                                        runSnykScan(env.SNYK_TOKEN)
-                                    } else {
-                                        error "Snyk credential binding missing. Install Snyk plugin or provide SNYK_TOKEN as secret text."
-                                    }
-                                }
-                            }
+                            runSnykSecurityScanStage()
                         }
                     }
                 }
@@ -812,69 +435,7 @@ pipeline {
                     steps {
                         script {
                             echo "[INFO] === DOCKER BUILD & PUSH STARTED ==="
-                            
-                            try {
-                                def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
-                                
-                                modules.each { module ->
-                                    def dockerfilePath = "${module}/Dockerfile"
-                                    if (!fileExists(dockerfilePath)) {
-                                        echo "[WARN] No Dockerfile for ${module}, skipping image build"
-                                        return
-                                    }
-                                    
-                                    def immutableTag = "yas-${module}:${env.GIT_COMMIT_SHORT}"
-                                    echo "[INFO] Building image for module: ${module}"
-                                    
-                                    try {
-                                        if (module in ['backoffice', 'storefront']) {
-                                            // Frontend: build từ root với -f flag
-                                            retryWithBackoff(2, 5) {
-                                                sh """
-                                                    docker build -f ${dockerfilePath} \
-                                                        -t ${env.REGISTRY}/${immutableTag} . \
-                                                        --progress=plain
-                                                """
-                                            }
-                                        } else {
-                                            // Backend: build từ folder module
-                                            dir(module) {
-                                                retryWithBackoff(2, 5) {
-                                                    sh """
-                                                        docker build -t ${env.REGISTRY}/${immutableTag} . \
-                                                            --progress=plain
-                                                    """
-                                                }
-                                            }
-                                        }
-                                        
-                                        // Push với retry cho network issues
-                                        echo "[INFO] Pushing ${immutableTag} to ${env.REGISTRY}"
-                                        retryWithBackoff(3, 5) {
-                                            sh """
-                                                docker push ${env.REGISTRY}/${immutableTag}
-                                            """
-                                        }
-                                        
-                                        // Mutable tag cho human-readable
-                                        def mutableTag = "yas-${module}:${env.BRANCH_NAME.replace('/', '-')}-${env.GIT_COMMIT_SHORT}"
-                                        sh """
-                                            docker tag ${env.REGISTRY}/${immutableTag} ${env.REGISTRY}/${mutableTag}
-                                            docker push ${env.REGISTRY}/${mutableTag}
-                                        """
-                                        
-                                        echo "[OK] Pushed ${immutableTag}"
-                                        
-                                    } catch (Exception e) {
-                                        echo "[ERROR] Failed to build/push image for ${module}: ${e.message}"
-                                        // Continue với module khác, không fail toàn pipeline
-                                    }
-                                }
-                                
-                            } catch (Exception e) {
-                                echo "[ERROR] Docker build stage failed: ${e.message}"
-                                // Log nhưng không fail để các stage sau vẫn chạy
-                            }
+                            runStageOrWarn('Build & Push Docker Image') { runBuildAndPushStage() }
                         }
                     }
                 }
@@ -934,61 +495,7 @@ pipeline {
                     steps {
                         script {
                             echo "[INFO] === SAVING MAVEN CACHE ==="
-                            
-                            try {
-                                // Chỉ save nếu build thành công
-                                if (currentBuild.result in [null, 'SUCCESS', 'UNSTABLE']) {
-                                    if (!env.BRANCH_NAME?.trim()) {
-                                        env.BRANCH_NAME = env.CHANGE_BRANCH?.trim()
-                                            ?: (env.GIT_BRANCH ? env.GIT_BRANCH.replaceFirst(/^origin\//, '').trim() : null)
-                                            ?: 'detached'
-                                        env.BRANCH_NAME = env.BRANCH_NAME.replaceAll('/', '-')
-                                        echo "[WARN] BRANCH_NAME not set, using '${env.BRANCH_NAME}'"
-                                    }
-                                    if (!env.CACHE_KEY?.trim()) {
-                                        env.CACHE_KEY = sh(
-                                            script: """
-                                                find . '(' -name 'pom.xml' -o -name 'package.json' ')' -exec md5sum {} + 2>/dev/null |
-                                                md5sum | awk '{print \$1}'
-                                            """,
-                                            returnStdout: true,
-                                            label: 'generate-cache-key-fallback'
-                                        ).trim()
-                                    }
-                                    if (!env.CACHE_KEY?.trim()) {
-                                        echo "[WARN] Cache key is empty, skipping cache save to S3"
-                                        return
-                                    }
-                                    sh """
-                                        echo "[INFO] Creating cache archive for branch ${BRANCH_NAME}"
-                                        tar -czf cache.tar.gz -C ~/.m2 repository 2>/dev/null || true
-                                        
-                                        if [ -f cache.tar.gz ]; then
-                                            # Upload với retry
-                                            aws s3 cp cache.tar.gz \
-                                                s3://${env.CACHE_BUCKET}/maven/${BRANCH_NAME}-${env.CACHE_KEY}.tar.gz \
-                                                --storage-class STANDARD_IA
-                                            
-                                            # Tạo và upload checksum
-                                            md5sum cache.tar.gz | awk '{print \$1}' > cache.tar.gz.md5
-                                            aws s3 cp cache.tar.gz.md5 \
-                                                s3://${env.CACHE_BUCKET}/maven/${BRANCH_NAME}-${env.CACHE_KEY}.tar.gz.md5
-                                            
-                                            echo "[OK] Cache saved to S3"
-                                        else
-                                            echo "[WARN] Cache archive empty, skipping upload"
-                                        fi
-                                        
-                                        rm -f cache.tar.gz cache.tar.gz.md5
-                                    """
-                                } else {
-                                    echo "[INFO] Build result: ${currentBuild.result}. Skipping cache save."
-                                }
-                                
-                            } catch (Exception e) {
-                                echo "[WARN] Failed to save cache: ${e.message}. Continuing."
-                                // Cache save fail không nên fail pipeline
-                            }
+                            runSaveMavenCacheStage()
                         }
                     }
                 }
@@ -1156,6 +663,498 @@ def runStageOrWarn(String stageName, Closure body) {
             currentBuild.result = 'UNSTABLE'
             echo "[WARN] ${stageName} failed, continuing pipeline."
         }
+    }
+}
+
+def runSmartRoutingStage() {
+    echo "[INFO] === SMART ROUTING STARTED ==="
+    echo "[INFO] Target branch: ${CHANGE_TARGET}"
+    env.AFFECTED_MODULES = ''
+    env.COMMON_LIB_CHANGED = 'false'
+    env.SHOULD_BUILD = 'false'
+    env.SONAR_RAN = 'false'
+    isPR = env.CHANGE_ID != null
+    maxInfraRetry = isPR ? 1 : 2
+
+    try {
+        env.GIT_COMMIT_SHORT = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : 'unknown'
+        env.BRANCH_NAME = env.BRANCH_NAME?.trim()
+            ?: env.CHANGE_BRANCH?.trim()
+            ?: (env.GIT_BRANCH ? env.GIT_BRANCH.replaceFirst(/^origin\//, '').trim() : null)
+            ?: 'detached'
+        env.BRANCH_NAME = env.BRANCH_NAME.replaceAll('/', '-')
+        // Fetch target branch để có merge base chính xác
+        sh "git fetch origin ${CHANGE_TARGET}:refs/remotes/origin/${CHANGE_TARGET} --depth=50"
+
+        // ✅ Git diff 3-dots: so sánh từ merge base, không bị nhiễm code người khác
+        def changedFiles = sh(
+            script: "git diff --name-only origin/${CHANGE_TARGET}...HEAD",
+            returnStdout: true,
+            label: 'git-diff'
+        ).trim().split('\n').findAll { it && !it.isEmpty() }
+
+        echo "[DEBUG] Changed files: ${changedFiles.take(10)}${changedFiles.size() > 10 ? '...' : ''}"
+
+        // Tìm danh sách modules (pom.xml hoặc package.json)
+        def allModules = sh(
+            script: '''find . -maxdepth 2 '(' -name 'pom.xml' -o -name 'package.json' ')' -printf '%h\n' 2>/dev/null | sed 's|^[.]/||' | grep -v '^[.]$' | sort -u''',
+            returnStdout: true,
+            label: 'find-modules'
+        ).trim().split('\n').findAll { it && !it.isEmpty() }
+
+        // Tính toán affected modules
+        def affected = []
+        def commonLibChanged = false
+
+        changedFiles.each { file ->
+            // Check common-library change (hiệu ứng domino)
+            if (file.startsWith('common-library/')) {
+                commonLibChanged = true
+                echo "[INFO] common-library changed - will build all dependents"
+            }
+
+            // Find which module this file belongs to
+            def module = allModules.find { m ->
+                file.startsWith("${m}/") || file == "${m}/pom.xml" || file == "${m}/package.json"
+            }
+
+            if (module && !affected.contains(module)) {
+                affected << module
+                echo "[INFO] Affected module: ${module}"
+            }
+        }
+
+        // Set environment variables cho các stage sau
+        def affectedModules = affected.join(',')
+        def shouldBuildFlag = (affectedModules?.trim() ? true : false) || commonLibChanged
+        env.AFFECTED_MODULES = affectedModules
+        env.COMMON_LIB_CHANGED = commonLibChanged.toString()
+        env.SHOULD_BUILD = shouldBuildFlag ? 'true' : 'false'
+
+        echo "[RESULT] Affected modules: ${affectedModules ?: 'none'}"
+        echo "[RESULT] Common lib changed: ${env.COMMON_LIB_CHANGED}"
+        echo "[RESULT] Should build: ${env.SHOULD_BUILD}"
+
+    } catch (Exception e) {
+        echo "[ERROR] Smart Routing failed: ${e.message}"
+        // Vẫn cho phép pipeline tiếp tục với SHOULD_BUILD=true để không bỏ sót build
+        env.SHOULD_BUILD = 'true'
+        throw e
+    }
+}
+
+def runGitleaksStage() {
+    def gitleaksVersion = '8.18.0'
+    def gitleaksBin = "${WORKSPACE}/gitleaks"
+
+    sh """
+        set -euo pipefail
+
+        if command -v gitleaks &> /dev/null; then
+            echo "[INFO] Gitleaks found in PATH: \$(command -v gitleaks)"
+        fi
+
+        if [ ! -f ${gitleaksBin} ]; then
+            echo "[INFO] Downloading gitleaks ${gitleaksVersion}..."
+            curl -fL "https://github.com/gitleaks/gitleaks/releases/download/v${gitleaksVersion}/gitleaks_${gitleaksVersion}_linux_x64.tar.gz" -o gitleaks.tar.gz
+            tar -xzf gitleaks.tar.gz gitleaks
+            chmod +x gitleaks
+            rm -f gitleaks.tar.gz
+        else
+            echo "[INFO] Gitleaks binary already available at ${gitleaksBin}"
+        fi
+
+        if [ ! -x ${gitleaksBin} ]; then
+            echo "[ERROR] Gitleaks binary is not executable: ${gitleaksBin}"
+            exit 1
+        fi
+
+        echo "[INFO] Gitleaks version:"
+        ${gitleaksBin} version
+    """
+
+    def reportPath = "${WORKSPACE}/gitleaks-report.json"
+    def scanStatus = sh(
+        script: """
+            set -euo pipefail
+            if [ -f .gitleaks.toml ]; then
+                echo "[INFO] Using .gitleaks.toml"
+                ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1 \
+                    --config=.gitleaks.toml \
+                    --report-format=csv --report-path=${reportPath} \
+                    --no-banner --no-color
+            else
+                echo "[WARN] .gitleaks.toml not found, running without config"
+                ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1 \
+                    --report-format=csv --report-path=${reportPath} \
+                    --no-banner --no-color
+            fi
+        """,
+        returnStatus: true
+    )
+    if (scanStatus != 0) {
+        sh """
+            set -euo pipefail
+            echo "[ERROR] Gitleaks found leaks. Files:"
+            if [ -f ${reportPath} ]; then
+                awk -F, 'NR>1{print \$3}' ${reportPath} | \
+                    sed -E 's/^"//;s/"\$//' | \
+                    sort -u | \
+                    sed 's/^/- /'
+            else
+                echo "[ERROR] Report not found: ${reportPath}"
+            fi
+        """
+        error "❌ Gitleaks scan failed: leaks found."
+    }
+
+    echo "[OK] Gitleaks passed."
+}
+
+def runCompileAndPackageStage() {
+    def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
+
+    // Nếu common-library thay đổi, build tất cả dependents
+    if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
+        modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
+        echo "[INFO] Common lib changed - will compile all modules"
+    }
+
+    if (modules.isEmpty()) {
+        echo "[WARN] No modules to compile"
+        return
+    }
+
+    // Tách frontend/backend
+    def frontendModules = modules.findAll { it in ['backoffice', 'storefront'] }
+    def backendModules = modules.findAll { !(it in ['backoffice', 'storefront']) }
+
+    // Build frontend modules (npm)
+    frontendModules.each { module ->
+        echo "[INFO] Installing dependencies for frontend: ${module}"
+        dir(module) {
+            sh """
+                npm ci --prefer-offline --no-audit --loglevel=error
+            """
+        }
+    }
+
+    // Build backend modules (Maven reactor - single command)
+    if (backendModules) {
+        def usesJava21 = backendModules.any { it.contains('automation-ui') }
+        def javaHome = usesJava21
+            ? '/usr/lib/jvm/java-21-amazon-corretto'
+            : '/usr/lib/jvm/java-25-amazon-corretto'
+
+        def mvnCmd = "/opt/maven/bin/mvn clean compile -T 1C -pl ${backendModules.join(',')} -am"
+        if (env.COMMON_LIB_CHANGED == 'true') {
+            mvnCmd += " -amd"
+            echo "[INFO] Added -amd flag for common-library dependents"
+        }
+
+        echo "[CMD] ${mvnCmd}"
+
+        sh """
+            export JAVA_HOME=${javaHome}
+            export PATH=${javaHome}/bin:\$PATH
+            ${mvnCmd}
+        """
+    }
+
+    echo "[OK] Compile & Package completed"
+}
+
+def runUnitTestsStage() {
+    def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
+    if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
+        modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
+    }
+    if (modules.isEmpty()) {
+        echo "[WARN] No modules to test"
+        return
+    }
+
+    def frontendModules = modules.findAll { it in ['backoffice', 'storefront'] }
+    def backendModules = modules.findAll { !(it in ['backoffice', 'storefront']) }
+
+    // Frontend unit tests
+    frontendModules.each { module ->
+        echo "[INFO] Running unit tests for frontend: ${module}"
+        dir(module) {
+            sh """
+                npm test -- --coverage --watchAll=false --passWithNoTests
+            """
+        }
+    }
+
+    // Backend unit tests (Maven Surefire)
+    if (backendModules) {
+        def usesJava21 = backendModules.any { it.contains('automation-ui') }
+        def javaHome = usesJava21
+            ? '/usr/lib/jvm/java-21-amazon-corretto'
+            : '/usr/lib/jvm/java-25-amazon-corretto'
+
+        def mvnCmd = "/opt/maven/bin/mvn test -T 1C -pl ${backendModules.join(',')}"
+        if (env.COMMON_LIB_CHANGED == 'true') mvnCmd += " -amd"
+
+        sh """
+            export JAVA_HOME=${javaHome}
+            export PATH=${javaHome}/bin:\$PATH
+            ${mvnCmd}
+        """
+    }
+}
+
+def runIntegrationTestsStage() {
+    def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
+    if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
+        modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
+    }
+
+    // Chỉ backend có integration tests
+    def backendModules = modules.findAll {
+        !(it in ['backoffice', 'storefront']) && fileExists("${it}/pom.xml")
+    }
+
+    if (!backendModules) {
+        echo "[INFO] No backend modules for integration tests"
+        return
+    }
+
+    def usesJava21 = backendModules.any { it.contains('automation-ui') }
+    def javaHome = usesJava21
+        ? '/usr/lib/jvm/java-21-amazon-corretto'
+        : '/usr/lib/jvm/java-25-amazon-corretto'
+
+    def mvnCmd = "/opt/maven/bin/mvn verify -DskipUnitTests -T 1C -pl ${backendModules.join(',')} -am"
+    if (env.COMMON_LIB_CHANGED == 'true') mvnCmd += " -amd"
+    if (env.CHANGE_ID) {
+        mvnCmd += " -fae"  // Fail-At-End cho PR
+        echo "[INFO] PR mode: -fae enabled"
+    }
+
+    echo "[CMD] ${mvnCmd}"
+
+    // Integration tests có thể lâu, dùng timeout
+    timeout(time: 30, unit: 'MINUTES') {
+        sh """
+            export JAVA_HOME=${javaHome}
+            export PATH=${javaHome}/bin:\$PATH
+            ${mvnCmd}
+        """
+    }
+}
+
+def runSonarAnalysisStage() {
+    def sonarRan = false
+    try {
+        def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
+        if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
+            modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
+        }
+
+        // Chỉ scan Java modules
+        modules.each { module ->
+            if (!fileExists("${module}/pom.xml")) {
+                echo "[INFO] Skipping Sonar for non-Java module: ${module}"
+                return
+            }
+
+            def keyLine = PROJECT_KEYS.readLines()
+                .collect { it.trim() }
+                .find { it.startsWith("${module}:") }
+            def projectKey = keyLine ? keyLine.substring(keyLine.indexOf(':') + 1).trim() : null
+            if (!projectKey) {
+                echo "[WARN] No Sonar project key for module: ${module}, skipping"
+                return
+            }
+
+            echo "[INFO] Analyzing module: ${module} -> ${projectKey}"
+
+            // Timeout cho Sonar scan
+            timeout(time: 10, unit: 'MINUTES') {
+                withSonarQubeEnv('sonarcloud') {
+                    sh """
+                        /opt/maven/bin/mvn sonar:sonar \
+                            -pl ${module} -am \
+                            -Dsonar.projectKey=${projectKey} \
+                            -Dsonar.projectName=${module} \
+                            -Dsonar.organization=${SONAR_ORG} \
+                            -Dsonar.host.url=${SONAR_HOST_URL} \
+                            -Dsonar.sources=src/main/java \
+                            -Dsonar.tests=src/test/java \
+                            -Dsonar.java.binaries=target/classes \
+                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                            -Dsonar.scm.disabled=true \
+                            -Dsonar.login=\${SONAR_AUTH_TOKEN}
+                    """
+                }
+            }
+            sonarRan = true
+        }
+    } finally {
+        env.SONAR_RAN = sonarRan ? 'true' : 'false'
+    }
+}
+
+def runSnykSecurityScanStage() {
+    timeout(time: 10, unit: 'MINUTES') {
+        def runSnykScan = { token ->
+            def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
+            if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
+                modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
+            }
+
+            modules.each { module ->
+                def scanDir = (module == 'common-library') ? '.' : module
+                def scanPath = (scanDir == '.') ? "${WORKSPACE}" : "${WORKSPACE}/${scanDir}"
+
+                echo "[INFO] Running Snyk scan for: ${module}"
+
+                // Snyk trong Docker với volume mount
+                sh """
+                    docker run --rm \
+                        -v ${scanPath}:/app:ro \
+                        -e SNYK_TOKEN=${token} \
+                        snyk/snyk:alpine \
+                        snyk test --all-projects \
+                        --severity-threshold=high \
+                        --fail-on=high,critical \
+                        --json-file-output=/app/snyk-report.json
+                """
+
+                // Archive Snyk report nếu có
+                if (fileExists("${scanDir}/snyk-report.json")) {
+                    archiveArtifacts artifacts: "${scanDir}/snyk-report.json",
+                                 allowEmptyArchive: true
+                }
+            }
+        }
+
+        try {
+            withCredentials([[$class: 'SnykApiTokenBinding', credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN']]) {
+                runSnykScan(env.SNYK_TOKEN)
+            }
+        } catch (Exception e) {
+            if (env.SNYK_TOKEN?.trim()) {
+                echo "[WARN] Snyk binding unavailable, using SNYK_TOKEN from environment"
+                runSnykScan(env.SNYK_TOKEN)
+            } else {
+                error "Snyk credential binding missing. Install Snyk plugin or provide SNYK_TOKEN as secret text."
+            }
+        }
+    }
+}
+
+def runBuildAndPushStage() {
+    def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
+
+    modules.each { module ->
+        def dockerfilePath = "${module}/Dockerfile"
+        if (!fileExists(dockerfilePath)) {
+            echo "[WARN] No Dockerfile for ${module}, skipping image build"
+            return
+        }
+
+        def immutableTag = "yas-${module}:${env.GIT_COMMIT_SHORT}"
+        echo "[INFO] Building image for module: ${module}"
+
+        try {
+            if (module in ['backoffice', 'storefront']) {
+                // Frontend: build từ root với -f flag
+                sh """
+                    docker build -f ${dockerfilePath} \
+                        -t ${env.REGISTRY}/${immutableTag} . \
+                        --progress=plain
+                """
+            } else {
+                // Backend: build từ folder module
+                dir(module) {
+                    sh """
+                        docker build -t ${env.REGISTRY}/${immutableTag} . \
+                            --progress=plain
+                    """
+                }
+            }
+
+            // Push với retry cho network issues
+            echo "[INFO] Pushing ${immutableTag} to ${env.REGISTRY}"
+            retry(maxInfraRetry) {
+                sh """
+                    docker push ${env.REGISTRY}/${immutableTag}
+                """
+            }
+
+            // Mutable tag cho human-readable
+            def mutableTag = "yas-${module}:${env.BRANCH_NAME.replace('/', '-')}-${env.GIT_COMMIT_SHORT}"
+            sh """
+                docker tag ${env.REGISTRY}/${immutableTag} ${env.REGISTRY}/${mutableTag}
+                docker push ${env.REGISTRY}/${mutableTag}
+            """
+
+            echo "[OK] Pushed ${immutableTag}"
+
+        } catch (Exception e) {
+            echo "[ERROR] Failed to build/push image for ${module}: ${e.message}"
+            // Continue với module khác, không fail toàn pipeline
+        }
+    }
+}
+
+def runSaveMavenCacheStage() {
+    try {
+        // Chỉ save nếu build thành công
+        if (currentBuild.result in [null, 'SUCCESS', 'UNSTABLE']) {
+            if (!env.BRANCH_NAME?.trim()) {
+                env.BRANCH_NAME = env.CHANGE_BRANCH?.trim()
+                    ?: (env.GIT_BRANCH ? env.GIT_BRANCH.replaceFirst(/^origin\//, '').trim() : null)
+                    ?: 'detached'
+                env.BRANCH_NAME = env.BRANCH_NAME.replaceAll('/', '-')
+                echo "[WARN] BRANCH_NAME not set, using '${env.BRANCH_NAME}'"
+            }
+            if (!env.CACHE_KEY?.trim()) {
+                env.CACHE_KEY = sh(
+                    script: """
+                        find . '(' -name 'pom.xml' -o -name 'package.json' ')' -exec md5sum {} + 2>/dev/null |
+                        md5sum | awk '{print \$1}'
+                    """,
+                    returnStdout: true,
+                    label: 'generate-cache-key-fallback'
+                ).trim()
+            }
+            if (!env.CACHE_KEY?.trim()) {
+                echo "[WARN] Cache key is empty, skipping cache save to S3"
+                return
+            }
+            sh """
+                echo "[INFO] Creating cache archive for branch ${BRANCH_NAME}"
+                tar -czf cache.tar.gz -C ~/.m2 repository 2>/dev/null || true
+
+                if [ -f cache.tar.gz ]; then
+                    # Upload với retry
+                    aws s3 cp cache.tar.gz \
+                        s3://${env.CACHE_BUCKET}/maven/${BRANCH_NAME}-${env.CACHE_KEY}.tar.gz \
+                        --storage-class STANDARD_IA
+
+                    # Tạo và upload checksum
+                    md5sum cache.tar.gz | awk '{print \$1}' > cache.tar.gz.md5
+                    aws s3 cp cache.tar.gz.md5 \
+                        s3://${env.CACHE_BUCKET}/maven/${BRANCH_NAME}-${env.CACHE_KEY}.tar.gz.md5
+
+                    echo "[OK] Cache saved to S3"
+                else
+                    echo "[WARN] Cache archive empty, skipping upload"
+                fi
+
+                rm -f cache.tar.gz cache.tar.gz.md5
+            """
+        } else {
+            echo "[INFO] Build result: ${currentBuild.result}. Skipping cache save."
+        }
+
+    } catch (Exception e) {
+        echo "[WARN] Failed to save cache: ${e.message}. Continuing."
+        // Cache save fail không nên fail pipeline
     }
 }
 
