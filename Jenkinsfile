@@ -65,10 +65,7 @@ pipeline {
             webhook:pnthai285_yas-webhook
         '''
         
-        // Module lists (khởi tạo rỗng, sẽ set trong pipeline)
-        AFFECTED_MODULES   = ''
-        COMMON_LIB_CHANGED = 'false'
-        SHOULD_BUILD       = 'false'
+        // Module lists are set in Smart Routing
     }
 
     // ============================================================
@@ -85,6 +82,9 @@ pipeline {
                 script {
                     echo "[INFO] === SMART ROUTING STARTED ==="
                     echo "[INFO] Target branch: ${CHANGE_TARGET}"
+                    env.AFFECTED_MODULES = ''
+                    env.COMMON_LIB_CHANGED = 'false'
+                    env.SHOULD_BUILD = 'false'
                     
                     try {
                         env.GIT_COMMIT_SHORT = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : 'unknown'
