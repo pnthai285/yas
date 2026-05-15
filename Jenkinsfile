@@ -187,16 +187,40 @@ pipeline {
                         ${gitleaksBin} version
                     """
                     
-                    sh """
-                        set -euo pipefail
-                        if [ -f .gitleaksignore ]; then
-                            echo "[INFO] Using .gitleaksignore"
-                            ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1 --gitleaks-ignore-path=.gitleaksignore
-                        else
-                            echo "[WARN] .gitleaksignore not found, running without ignore"
-                            ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1
-                        fi
-                    """
+                    def reportPath = "${WORKSPACE}/gitleaks-report.json"
+                    def scanStatus = sh(
+                        script: """
+                            set -euo pipefail
+                            if [ -f .gitleaksignore ]; then
+                                echo "[INFO] Using .gitleaksignore"
+                                ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1 \
+                                    --gitleaks-ignore-path=.gitleaksignore \
+                                    --report-format=json --report-path=${reportPath} \
+                                    --no-banner --no-color
+                            else
+                                echo "[WARN] .gitleaksignore not found, running without ignore"
+                                ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1 \
+                                    --report-format=json --report-path=${reportPath} \
+                                    --no-banner --no-color
+                            fi
+                        """,
+                        returnStatus: true
+                    )
+                    if (scanStatus != 0) {
+                        sh """
+                            set -euo pipefail
+                            echo "[ERROR] Gitleaks found leaks. Files:"
+                            if [ -f ${reportPath} ]; then
+                                grep -o '"File":"[^"]*"' ${reportPath} | \
+                                    sed -E 's/"File":"([^"]*)"/\1/' | \
+                                    sort -u | \
+                                    sed 's/^/- /'
+                            else
+                                echo "[ERROR] Report not found: ${reportPath}"
+                            fi
+                        """
+                        error "❌ Gitleaks scan failed: leaks found."
+                    }
                 }
                 echo "[OK] Gitleaks passed."
             }
