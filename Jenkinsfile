@@ -191,16 +191,16 @@ pipeline {
                     def scanStatus = sh(
                         script: """
                             set -euo pipefail
-                            if [ -f .gitleaksignore ]; then
-                                echo "[INFO] Using .gitleaksignore"
+                            if [ -f .gitleaks.toml ]; then
+                                echo "[INFO] Using .gitleaks.toml"
                                 ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1 \
-                                    --gitleaks-ignore-path=.gitleaksignore \
-                                    --report-format=json --report-path=${reportPath} \
+                                    --config=.gitleaks.toml \
+                                    --report-format=csv --report-path=${reportPath} \
                                     --no-banner --no-color
                             else
-                                echo "[WARN] .gitleaksignore not found, running without ignore"
+                                echo "[WARN] .gitleaks.toml not found, running without config"
                                 ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1 \
-                                    --report-format=json --report-path=${reportPath} \
+                                    --report-format=csv --report-path=${reportPath} \
                                     --no-banner --no-color
                             fi
                         """,
@@ -211,20 +211,10 @@ pipeline {
                             set -euo pipefail
                             echo "[ERROR] Gitleaks found leaks. Files:"
                             if [ -f ${reportPath} ]; then
-                                python - <<'PY'
-import json
-from pathlib import Path
-
-path = Path("${reportPath}")
-data = json.loads(path.read_text(encoding="utf-8"))
-
-# Gitleaks JSON can be a list or have a "leaks" key depending on version.
-leaks = data.get("leaks", data) if isinstance(data, dict) else data
-files = sorted({item.get("File", "") for item in leaks if isinstance(item, dict) and item.get("File")})
-
-for f in files:
-    print(f"- {f}")
-PY
+                                awk -F, 'NR>1{print \$3}' ${reportPath} | \
+                                    sed -E 's/^"//;s/"\$//' | \
+                                    sort -u | \
+                                    sed 's/^/- /'
                             else
                                 echo "[ERROR] Report not found: ${reportPath}"
                             fi
