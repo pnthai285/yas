@@ -443,7 +443,7 @@ pipeline {
                                         ? '/usr/lib/jvm/java-21-amazon-corretto'
                                         : '/usr/lib/jvm/java-25-amazon-corretto'
                                     
-                                    def mvnCmd = "/opt/maven/bin/mvn clean compile -T 1C -pl ${backendModules.join(',')}"
+                                    def mvnCmd = "/opt/maven/bin/mvn clean compile -T 1C -pl ${backendModules.join(',')} -am"
                                     if (env.COMMON_LIB_CHANGED == 'true') {
                                         mvnCmd += " -amd"
                                         echo "[INFO] Added -amd flag for common-library dependents"
@@ -1089,9 +1089,9 @@ def retryWithBackoff(int maxAttempts, int baseDelaySeconds, Closure closure) {
             }
             
             // Exponential backoff: baseDelay * 2^(attempt-1)
-            def delay = baseDelaySeconds * Math.pow(2, attempts - 1)
+            def delay = baseDelaySeconds * (1 << (attempts - 1))
             echo "[WARN] Attempt ${attempts}/${maxAttempts} failed. Retrying in ${delay}s... Error: ${e.message}"
-            sleep(delay)
+            sleep time: delay, unit: 'SECONDS'
         }
     }
     
