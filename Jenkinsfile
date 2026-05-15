@@ -102,7 +102,7 @@ pipeline {
                         
                         // Tìm danh sách modules (pom.xml hoặc package.json)
                         def allModules = sh(
-                            script: '''find . -maxdepth 2 \( -name 'pom.xml' -o -name 'package.json' \) -printf '%h\n' 2>/dev/null | sed 's|^\./||' | grep -v '^\.$' | sort -u''',
+                            script: '''find . -maxdepth 2 '(' -name 'pom.xml' -o -name 'package.json' ')' -printf '%h\n' 2>/dev/null | sed 's|^[.]/||' | grep -v '^[.]$' | sort -u''',
                             returnStdout: true,
                             label: 'find-modules'
                         ).trim().split('\n').findAll { it && !it.isEmpty() }
@@ -296,7 +296,7 @@ pipeline {
                                 // Generate cache key dựa trên content (pom.xml + package.json)
                                 env.CACHE_KEY = sh(
                                     script: """
-                                        find . \\( -name 'pom.xml' -o -name 'package.json' \\) -exec md5sum {} + 2>/dev/null | \
+                                        find . '(' -name 'pom.xml' -o -name 'package.json' ')' -exec md5sum {} + 2>/dev/null |
                                         md5sum | awk '{print \$1}'
                                     """,
                                     returnStdout: true,
