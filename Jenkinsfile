@@ -27,8 +27,7 @@ pipeline {
         // ✅ Log có timestamp
         timestamps()
         
-        // ✅ Update GitHub commit status
-        githubCommitStatus(context: 'continuous-integration/jenkins/pr-head')
+        // ✅ GitHub commit status handled by SCM integration
     }
 
     // ============================================================
@@ -498,13 +497,15 @@ pipeline {
                     }
                     post {
                         always {
-                            // Archive test results với graceful handling
-                            try {
-                                junit allowEmptyResults: true,
-                                      testResults: '**/target/surefire-reports/*.xml',
-                                      skipPublishingChecks: true
-                            } catch (Exception e) {
-                                echo "[WARN] Failed to archive JUnit results: ${e.message}"
+                            script {
+                                // Archive test results với graceful handling
+                                try {
+                                    junit allowEmptyResults: true,
+                                          testResults: '**/target/surefire-reports/*.xml',
+                                          skipPublishingChecks: true
+                                } catch (Exception e) {
+                                    echo "[WARN] Failed to archive JUnit results: ${e.message}"
+                                }
                             }
                         }
                     }
@@ -567,18 +568,20 @@ pipeline {
                     }
                     post {
                         always {
-                            try {
-                                // Archive Failsafe reports
-                                junit allowEmptyResults: true,
-                                      testResults: '**/target/failsafe-reports/*.xml',
-                                      skipPublishingChecks: true
-                                
-                                // Archive JaCoCo coverage
-                                archiveArtifacts artifacts: '**/target/site/jacoco/jacoco.xml',
-                                             allowEmptyArchive: true,
-                                             fingerprint: true
-                            } catch (Exception e) {
-                                echo "[WARN] Failed to archive integration test artifacts: ${e.message}"
+                            script {
+                                try {
+                                    // Archive Failsafe reports
+                                    junit allowEmptyResults: true,
+                                          testResults: '**/target/failsafe-reports/*.xml',
+                                          skipPublishingChecks: true
+                                    
+                                    // Archive JaCoCo coverage
+                                    archiveArtifacts artifacts: '**/target/site/jacoco/jacoco.xml',
+                                                 allowEmptyArchive: true,
+                                                 fingerprint: true
+                                } catch (Exception e) {
+                                    echo "[WARN] Failed to archive integration test artifacts: ${e.message}"
+                                }
                             }
                         }
                     }
