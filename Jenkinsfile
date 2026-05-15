@@ -846,7 +846,7 @@ def runCompileAndPackageStage() {
             ? '/usr/lib/jvm/java-21-amazon-corretto'
             : '/usr/lib/jvm/java-25-amazon-corretto'
 
-        def mvnCmd = "/opt/maven/bin/mvn clean compile -T 1C -pl ${backendModules.join(',')} -am"
+        def mvnCmd = "/opt/maven/bin/mvn clean install -DskipTests -T 1C -pl ${backendModules.join(',')} -am"
         if (env.COMMON_LIB_CHANGED == 'true') {
             mvnCmd += " -amd"
             echo "[INFO] Added -amd flag for common-library dependents"
