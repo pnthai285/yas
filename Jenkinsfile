@@ -612,7 +612,7 @@ pipeline {
                                 modules.each { module ->
                                     if (!fileExists("${module}/pom.xml")) {
                                         echo "[INFO] Skipping Sonar for non-Java module: ${module}"
-                                        continue  // ✅ Dùng continue thay vì return
+                                        return
                                     }
                                     
                                     def projectKey = PROJECT_KEYS.readLines()
@@ -621,7 +621,7 @@ pipeline {
                                         ?.getAt(1)
                                     if (!projectKey) {
                                         echo "[WARN] No Sonar project key for module: ${module}, skipping"
-                                        continue
+                                        return
                                     }
                                     
                                     echo "[INFO] Analyzing module: ${module} -> ${projectKey}"
@@ -780,7 +780,7 @@ pipeline {
                                     def dockerfilePath = "${module}/Dockerfile"
                                     if (!fileExists(dockerfilePath)) {
                                         echo "[WARN] No Dockerfile for ${module}, skipping image build"
-                                        continue  // ✅ Dùng continue
+                                        return
                                     }
                                     
                                     def immutableTag = "yas-${module}:${env.GIT_COMMIT_SHORT}"
@@ -828,7 +828,6 @@ pipeline {
                                     } catch (Exception e) {
                                         echo "[ERROR] Failed to build/push image for ${module}: ${e.message}"
                                         // Continue với module khác, không fail toàn pipeline
-                                        continue
                                     }
                                 }
                                 
