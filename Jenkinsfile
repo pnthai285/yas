@@ -614,6 +614,12 @@ pipeline {
                                     archiveArtifacts artifacts: '**/target/site/jacoco/jacoco.xml',
                                                  allowEmptyArchive: true,
                                                  fingerprint: true
+
+                                    // Publish JaCoCo report for Jenkins charts (requires JaCoCo plugin)
+                                    jacoco execPattern: '**/target/jacoco.exec',
+                                           classPattern: '**/target/classes',
+                                           sourcePattern: '**/src/main/java',
+                                           exclusionPattern: '**/target/**'
                                 } catch (Exception e) {
                                     echo "[WARN] Failed to archive integration test artifacts: ${e.message}"
                                 }
@@ -706,16 +712,9 @@ pipeline {
                                 // ✅ Timeout CRITICAL: tránh zombie pipeline
                                 timeout(time: 15, unit: 'MINUTES') {
                                     def gateResult = waitForQualityGate abortPipeline: false
-                                    // Archive JaCoCo coverage
-                                    archiveArtifacts artifacts: '**/target/site/jacoco/jacoco.xml',
-                                                 allowEmptyArchive: true,
-                                                 fingerprint: true
-
-                                    // Publish JaCoCo report for Jenkins charts (requires JaCoCo plugin)
-                                    jacoco execPattern: '**/target/jacoco.exec',
-                                           classPattern: '**/target/classes',
-                                           sourcePattern: '**/src/main/java',
-                                           exclusionPattern: '**/target/**'
+                                    if (gateResult.status != 'OK') {
+                                        echo "[ERROR] Quality Gate failed: ${gateResult.status}"
+                                        // Log chi tiết để debug
                                         echo "[DEBUG] Quality Gate details: ${gateResult}"
                                         
                                         // Fail pipeline cho PR
