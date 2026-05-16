@@ -1056,6 +1056,29 @@ def runSnykSecurityScanStage() {
         }
 
         try {
+            // --- CỰC KỲ QUAN TRỌNG ---
+            // Phải install parent POM và common-library trước vì Snyk gọi mvn dependency:tree cục bộ
+            // Nếu không có yas POM và common-library trong ~/.m2, mvn sẽ báo lỗi "Could not find artifact"
+            // Thực hiện MỘT LẦN trước vòng lặp để tránh lỗi state do Jenkins giữ lại workspace
+            sh """
+                echo "[INFO] Pre-building parent POM and common-library for Snyk resolution..."
+                # Xoá cache cũ để tránh lưu cữu lỗi MNG-624 của các lần build trước
+                rm -rf ~/.m2/repository/com/yas || true
+                
+                export JAVA_HOME=/usr/lib/jvm/java-25-amazon-corretto
+                export PATH=\${JAVA_HOME}/bin:/opt/maven/bin:\$PATH
+                
+                mvn install -N -DskipTests -q || true
+                if [ -d common-library ]; then
+                    mvn install -pl common-library -am -DskipTests -q || true
+                fi
+                
+                # Sửa lỗi Maven MNG-624 (Lỗi không resolve được \\\${revision} từ local repo)
+                if [ -d ~/.m2/repository/com/yas ]; then
+                    find ~/.m2/repository/com/yas -name "*.pom" -exec sed -i 's/\\\${revision}/1.0-SNAPSHOT/g' {} + || true
+                fi
+            """
+
             withCredentials([string(credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN')]) {
                 modules.each { module ->
                     def scanDir = (module == 'common-library') ? '.' : module
@@ -1082,24 +1105,6 @@ def runSnykSecurityScanStage() {
 
                         # Cấp quyền thực thi cho mvnw để Snyk không bị lỗi EACCES (-13)
                         chmod +x ${scanPath}/mvnw 2>/dev/null || true
-
-                        # Phải install parent POM và common-library trước vì Snyk gọi mvn dependency:tree cục bộ
-                        # Nếu không có yas POM và common-library trong ~/.m2, mvn sẽ báo lỗi "Could not find artifact"
-                        if [ ! -f .snyk-prebuild-done ]; then
-                            echo "[INFO] Pre-building parent POM and common-library for Snyk resolution..."
-                            mvn install -N -DskipTests -q || true
-                            if [ -d common-library ]; then
-                                mvn install -pl common-library -am -DskipTests -q || true
-                            fi
-                            
-                            # CỰC KỲ QUAN TRỌNG: Sửa lỗi Maven MNG-624 (Lỗi không resolve được \${revision} từ local repo)
-                            # Bằng cách thay thế cứng \${revision} thành 1.0-SNAPSHOT trong các file POM đã cache
-                            if [ -d ~/.m2/repository/com/yas ]; then
-                                find ~/.m2/repository/com/yas -name "*.pom" -exec sed -i 's/\\\${revision}/1.0-SNAPSHOT/g' {} + || true
-                            fi
-                            
-                            touch .snyk-prebuild-done
-                        fi
 
                         ./snyk-linux test -d --all-projects \\
                             --severity-threshold=high \\
