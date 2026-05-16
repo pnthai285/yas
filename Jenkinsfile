@@ -1123,16 +1123,15 @@ def runSnykSecurityScanStage() {
                         echo "✅ [SUCCESS] Snyk scan passed! No high-severity vulnerabilities found in ${module} (Exit Code: 0)."
                     } else if (snykExitCode == 1) {
                         echo "⚠️ [ACTION NEEDED] Snyk scan completed, but found HIGH-SEVERITY VULNERABILITIES in ${module} (Exit Code: 1)!"
-                        echo "⚠️ Vui lòng nâng cấp các thư viện theo hướng dẫn của Snyk trong log."
+                        echo "⚠️ Please upgrade the libraries according to Snyk's instructions in the log.."
                         
                         if (isPR || env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
-                            echo "⚠️ [POLICY] Strict gate for PR/main: Marking build as UNSTABLE."
-                            currentBuild.result = 'UNSTABLE'
+                            error "❌ [POLICY] Strict gate for PR/Main: A high-risk security vulnerability exists. Hard Gate: Build failed (Exit 1)!"
                         } else {
-                            echo "⚠️ [POLICY] Feature branch check: Logging warning only, not failing the build."
+                            echo "⚠️ [POLICY] Feature branch: Only warning (Non-blocking), continue build."
                         }
                     } else if (snykExitCode == 2) {
-                        error "Lỗi hệ thống của Snyk (ví dụ: Token hết hạn, 403 Forbidden, mạng). Hard failing the pipeline."
+                        error "Snyk system error (e.g. Token expired, 403 Forbidden, network issues). Hard failing the pipeline."
                     } else if (snykExitCode == 3) {
                         echo "ℹ️ [INFO] Snyk did not find any supported projects to scan in ${module} (Exit Code: 3). Skipping."
                     } else {
@@ -1174,18 +1173,11 @@ def runBuildAndPushStage() {
         
         try {
             // ❌ KHÔNG retry docker build (lỗi code/Dockerfile → fail ngay)
-            if (module in ['backoffice', 'storefront']) {
+            dir(module) {
                 sh """
-                    echo "[BUILD][${module}] STEP: docker build (frontend context)"
-                    docker build -f ${dockerfilePath} -t ${env.REGISTRY}/${immutableTag} . --progress=plain
+                    echo "[BUILD][${module}] STEP: docker build"
+                    docker build -t ${env.REGISTRY}/${immutableTag} . --progress=plain
                 """
-            } else {
-                dir(module) {
-                    sh """
-                        echo "[BUILD][${module}] STEP: docker build (backend context)"
-                        docker build -t ${env.REGISTRY}/${immutableTag} . --progress=plain
-                    """
-                }
             }
             
             // ✅ CHỈ retry docker push (network transient)
