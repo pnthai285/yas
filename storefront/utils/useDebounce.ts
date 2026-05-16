@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 // Hook
 export const useDebounce = (value: string | undefined, delay: number) => {
-  // State and setters for Debounced value
+  // State and setters for debounced value
   const [debouncedValue, setDebouncedValue] = useState(value);
   useEffect(() => {
-    // Update Debounced value after delay
+    // Update debounced value after delay
     const handler = setTimeout(() => {
       setDebouncedValue(value);
     }, delay);

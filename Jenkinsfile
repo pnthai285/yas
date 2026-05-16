@@ -1080,6 +1080,9 @@ def runSnykSecurityScanStage() {
                             chmod +x ./snyk-linux
                         fi
 
+                        # Cấp quyền thực thi cho mvnw để Snyk không bị lỗi EACCES (-13)
+                        chmod +x ${scanPath}/mvnw 2>/dev/null || true
+
                         ./snyk-linux test -d --all-projects \\
                             --severity-threshold=high \\
                             --json-file-output=${scanPath}/snyk-report.json \\
