@@ -1093,30 +1093,58 @@ def runSnykSecurityScanStage() {
 
                     // Không dùng Docker image snyk:alpine vì image này không có Java/Maven
                     // Sử dụng Snyk CLI Native trực tiếp trên Agent để tận dụng Java/Maven có sẵn
-                    sh """
-                        export JAVA_HOME=${javaHome}
-                        export PATH=\${JAVA_HOME}/bin:/opt/maven/bin:\$PATH
-                        export MAVEN_OPTS="-Xmx2g"
+                    def snykExitCode = sh(
+                        script: """
+                            export JAVA_HOME=${javaHome}
+                            export PATH=\${JAVA_HOME}/bin:/opt/maven/bin:\$PATH
+                            export MAVEN_OPTS="-Xmx2g"
 
-                        if [ ! -f ./snyk-linux ]; then
-                            curl -sLo ./snyk-linux https://static.snyk.io/cli/latest/snyk-linux
-                            chmod +x ./snyk-linux
-                        fi
+                            if [ ! -f ./snyk-linux ]; then
+                                curl -sLo ./snyk-linux https://static.snyk.io/cli/latest/snyk-linux
+                                chmod +x ./snyk-linux
+                            fi
 
-                        # Cấp quyền thực thi cho mvnw để Snyk không bị lỗi EACCES (-13)
-                        chmod +x ${scanPath}/mvnw 2>/dev/null || true
+                            # Cấp quyền thực thi cho mvnw để Snyk không bị lỗi EACCES (-13)
+                            chmod +x ${scanPath}/mvnw 2>/dev/null || true
 
-                        ./snyk-linux test -d --all-projects \\
-                            --severity-threshold=high \\
-                            --json-file-output=${scanPath}/snyk-report.json \\
-                            ${scanPath} \\
-                            -- -U -Drevision=1.0-SNAPSHOT
-                    """
+                            set +e
+                            ./snyk-linux test --all-projects \\
+                                --severity-threshold=high \\
+                                --json-file-output=${scanPath}/snyk-report.json \\
+                                ${scanPath} \\
+                                -- -U -Drevision=1.0-SNAPSHOT
+                            exit \$?
+                        """,
+                        returnStatus: true
+                    )
+
+                    // Xử lý Exit Code của Snyk theo Best-Practice
+                    if (snykExitCode == 0) {
+                        echo "✅ [SUCCESS] Snyk scan passed! No high-severity vulnerabilities found in ${module} (Exit Code: 0)."
+                    } else if (snykExitCode == 1) {
+                        echo "⚠️ [ACTION NEEDED] Snyk scan completed, but found HIGH-SEVERITY VULNERABILITIES in ${module} (Exit Code: 1)!"
+                        echo "⚠️ Vui lòng nâng cấp các thư viện theo hướng dẫn của Snyk trong log."
+                        
+                        if (isPR || env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
+                            echo "⚠️ [POLICY] Strict gate for PR/main: Marking build as UNSTABLE."
+                            currentBuild.result = 'UNSTABLE'
+                        } else {
+                            echo "⚠️ [POLICY] Feature branch check: Logging warning only, not failing the build."
+                        }
+                    } else if (snykExitCode == 2) {
+                        error "Lỗi hệ thống của Snyk (ví dụ: Token hết hạn, 403 Forbidden, mạng). Hard failing the pipeline."
+                    } else if (snykExitCode == 3) {
+                        echo "ℹ️ [INFO] Snyk did not find any supported projects to scan in ${module} (Exit Code: 3). Skipping."
+                    } else {
+                        error "Snyk scan failed with an unknown error (Exit Code: ${snykExitCode})."
+                    }
 
                     // Archive Snyk report nếu có
                     if (fileExists("${scanDir}/snyk-report.json")) {
+                        echo "📄 [REPORT] Snyk JSON Report saved at: ${scanDir}/snyk-report.json"
                         archiveArtifacts artifacts: "${scanDir}/snyk-report.json",
-                                     allowEmptyArchive: true
+                                     allowEmptyArchive: true,
+                                     fingerprint: true
                     }
                 }
             }
