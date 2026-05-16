@@ -1166,6 +1166,14 @@ def runSnykSecurityScanStage() {
                         returnStatus: true
                     )
 
+                    // Archive Snyk report ngay lập tức trước khi throw error
+                    if (fileExists("${scanDir}/snyk-report.json")) {
+                        echo "📄 [REPORT] Snyk JSON Report saved at: ${scanDir}/snyk-report.json"
+                        archiveArtifacts artifacts: "${scanDir}/snyk-report.json",
+                                     allowEmptyArchive: true,
+                                     fingerprint: true
+                    }
+
                     // Xử lý Exit Code của Snyk theo Best-Practice
                     if (snykExitCode == 0) {
                         echo "✅ [SUCCESS] Snyk scan passed! No high-severity vulnerabilities found in ${module} (Exit Code: 0)."
@@ -1184,14 +1192,6 @@ def runSnykSecurityScanStage() {
                         echo "ℹ️ [INFO] Snyk did not find any supported projects to scan in ${module} (Exit Code: 3). Skipping."
                     } else {
                         error "Snyk scan failed with an unknown error (Exit Code: ${snykExitCode})."
-                    }
-
-                    // Archive Snyk report nếu có
-                    if (fileExists("${scanDir}/snyk-report.json")) {
-                        echo "📄 [REPORT] Snyk JSON Report saved at: ${scanDir}/snyk-report.json"
-                        archiveArtifacts artifacts: "${scanDir}/snyk-report.json",
-                                     allowEmptyArchive: true,
-                                     fingerprint: true
                     }
                 }
             }
