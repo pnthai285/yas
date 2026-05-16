@@ -1,5 +1,5 @@
 // ============================================================
-// JENKINSFILE - YAS CI/CD PIPELINE (PRODUCTION-READY)
+// JENKINSFILE - YAS CI/CD PIPELINE 
 // Monorepo: 22 microservices (Java Spring Boot + Next.js)
 // Infrastructure: AWS VPC, Spot Agents (NVMe), Local Registry, S3 Cache
 // Best-Practices: Retry at Master, Smart Routing, Maven Reactor, Graceful Error Handling
