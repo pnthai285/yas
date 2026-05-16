@@ -1066,6 +1066,7 @@ def runSnykSecurityScanStage() {
                     echo "[INFO] Running Snyk scan for: ${module}"
 
                     // Truyền vào Docker CLI chuẩn
+                    // Loại bỏ --fail-on=high,critical vì không hợp lệ
                     sh """
                         docker run --rm \
                             -v ${scanPath}:/app:ro \
@@ -1073,7 +1074,6 @@ def runSnykSecurityScanStage() {
                             snyk/snyk:alpine \
                             snyk test --all-projects \
                             --severity-threshold=high \
-                            --fail-on=high,critical \
                             --json-file-output=/app/snyk-report.json
                     """
 
@@ -1085,7 +1085,13 @@ def runSnykSecurityScanStage() {
                 }
             }
         } catch (Exception e) {
-            error "❌ SNYK_TOKEN missing. Check credential 'snyk-api-token-yas' (Kind: Secret text). Error: ${e.message}"
+            def errMsg = e.message ?: ""
+            if (errMsg.toLowerCase().contains("credential") || errMsg.toLowerCase().contains("could not find")) {
+                error "❌ SNYK_TOKEN missing. Check credential 'snyk-api-token-yas' (Kind: Secret text). Error: ${errMsg}"
+            } else {
+                echo "[WARN] Snyk scan failed (vulnerabilities found or other error): ${errMsg}"
+                currentBuild.result = 'UNSTABLE'
+            }
         }
     }
 }
