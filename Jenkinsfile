@@ -1063,22 +1063,27 @@ def runSnykSecurityScanStage() {
 
                     echo "[INFO] Running Snyk scan for: ${module}"
 
-                    // Truyền vào Docker CLI chuẩn
-                    // Loại bỏ --fail-on=high,critical vì không hợp lệ
-                    // Bỏ :ro để cho phép snyk ghi file tạm, mount ~/.m2 để reuse cache và giới hạn RAM 3g tránh OOM
-                    // Thêm chmod +x cho mvnw để tránh lỗi EACCES (-13) khi snyk gọi script
+                    def usesJava21 = module.contains('automation-ui')
+                    def javaHome = usesJava21
+                        ? '/usr/lib/jvm/java-21-amazon-corretto'
+                        : '/usr/lib/jvm/java-25-amazon-corretto'
+
+                    // Bỏ dùng Docker image snyk:alpine vì image này không có Java/Maven
+                    // Sử dụng Snyk CLI Native trực tiếp trên Agent để tận dụng Java/Maven có sẵn
                     sh """
-                        chmod +x ${scanPath}/mvnw 2>/dev/null || true
-                        docker run --rm -m 3g \
-                            -v ${scanPath}:/app \
-                            -v \$HOME/.m2:/root/.m2 \
-                            -v \$HOME/.m2:/home/node/.m2 \
-                            -e SNYK_TOKEN=\${SNYK_TOKEN} \
-                            -e MAVEN_OPTS="-Xmx2g" \
-                            snyk/snyk:alpine \
-                            snyk test -d --all-projects \
-                            --severity-threshold=high \
-                            --json-file-output=/app/snyk-report.json
+                        export JAVA_HOME=${javaHome}
+                        export PATH=\${JAVA_HOME}/bin:/opt/maven/bin:\$PATH
+                        export MAVEN_OPTS="-Xmx2g"
+
+                        if [ ! -f ./snyk-linux ]; then
+                            curl -sLo ./snyk-linux https://static.snyk.io/cli/latest/snyk-linux
+                            chmod +x ./snyk-linux
+                        fi
+
+                        ./snyk-linux test -d --all-projects \\
+                            --severity-threshold=high \\
+                            --json-file-output=${scanPath}/snyk-report.json \\
+                            ${scanPath}
                     """
 
                     // Archive Snyk report nếu có
