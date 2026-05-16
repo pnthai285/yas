@@ -1051,8 +1051,10 @@ def runSonarAnalysisStage() {
                     if (isFrontend) {
                         dir(module) {
                             sh """
+                                mkdir -p ${WORKSPACE}/.scannerwork
                                 docker run --rm \
                                     -v ${WORKSPACE}/${module}:/usr/src \
+                                    -v ${WORKSPACE}/.scannerwork:/usr/src/.scannerwork \
                                     -e SONAR_HOST_URL=${SONAR_HOST_URL} \
                                     -e SONAR_TOKEN=\${SONAR_AUTH_TOKEN} \
                                     sonarsource/sonar-scanner-cli \
@@ -1062,7 +1064,11 @@ def runSonarAnalysisStage() {
                                     -Dsonar.sources=. \
                                     -Dsonar.exclusions=node_modules/**,.next/**,out/**,coverage/**,public/** \
                                     -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
-                                    -Dsonar.scm.disabled=true
+                                    -Dsonar.scm.disabled=true \
+                                    -Dsonar.working.directory=/usr/src/.scannerwork
+                                
+                                # Sửa quyền file để Jenkins có thể đọc và xoá (cleanWs)
+                                docker run --rm -v ${WORKSPACE}:/app alpine chown -R \$(id -u):\$(id -g) /app/.scannerwork 2>/dev/null || true
                             """
                         }
                     } else {
