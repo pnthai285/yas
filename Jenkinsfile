@@ -1175,9 +1175,9 @@ def runSnykSecurityScanStage() {
                     mvn install -pl common-library -am -DskipTests -q || true
                 fi
                 
-                # Sửa lỗi Maven MNG-624 (Lỗi không resolve được \\${revision} từ local repo)
+                # Sửa lỗi Maven MNG-624 (Lỗi không resolve được ${revision} từ local repo)
                 if [ -d ~/.m2/repository/com/yas ]; then
-                    find ~/.m2/repository/com/yas -name "*.pom" -exec sed -i 's/\\${revision}/1.0-SNAPSHOT/g' {} + || true
+                    find ~/.m2/repository/com/yas -name "*.pom" -exec sed -i 's/\\\${revision}/1.0-SNAPSHOT/g' {} + || true
                 fi
             """
 
