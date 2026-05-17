@@ -332,7 +332,9 @@ pipeline {
                     steps {
                         script {
                             echo "[INFO] === SNYK SECURITY SCAN STARTED ==="
-                            runSnykSecurityScanStage()
+                            // PR  → isPR=true  → runStageOrWarn calls body() directly → error() propagates → FAILED
+                            // Push → isPR=false → runStageOrWarn catches exception → UNSTABLE + continues
+                            runStageOrWarn('Snyk Security Scan') { runSnykSecurityScanStage() }
                         }
                     }
                 }
@@ -1173,13 +1175,16 @@ def runSnykSecurityScanStage() {
                     mvn install -pl common-library -am -DskipTests -q || true
                 fi
                 
-                # Sửa lỗi Maven MNG-624 (Lỗi không resolve được \\\${revision} từ local repo)
+                # Sửa lỗi Maven MNG-624 (Lỗi không resolve được \\${revision} từ local repo)
                 if [ -d ~/.m2/repository/com/yas ]; then
-                    find ~/.m2/repository/com/yas -name "*.pom" -exec sed -i 's/\\\${revision}/1.0-SNAPSHOT/g' {} + || true
+                    find ~/.m2/repository/com/yas -name "*.pom" -exec sed -i 's/\\${revision}/1.0-SNAPSHOT/g' {} + || true
                 fi
             """
 
             withCredentials([string(credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN')]) {
+                // Track failure sau khi scan hết tất cả modules (để mọi report đều được tạo)
+                def snykFailedModules = []
+
                 modules.each { module ->
                     def scanDir = (module == 'common-library') ? '.' : module
                     def scanPath = (scanDir == '.') ? "${WORKSPACE}" : "${WORKSPACE}/${scanDir}"
@@ -1228,7 +1233,7 @@ def runSnykSecurityScanStage() {
                         try {
                             echo "[INFO] Generating HTML report for ${module}..."
                             sh """
-                                docker run --rm -v ${WORKSPACE}:/app -w /app node:20-alpine \
+                                docker run --rm -v ${WORKSPACE}:/app -w /app node:20-alpine \\
                                 npx -y snyk-to-html -i ${scanDir}/snyk-report.json -o ${scanDir}/snyk-report.html
                             """
                             
@@ -1287,10 +1292,8 @@ def runSnykSecurityScanStage() {
                             if (isTargetingProd) {
                                 echo "❌ [POLICY] Tight security gate enforced for PR/Production branches."
                                 echo "👉 ACTION REQUIRED: Please view the Snyk report artifact and upgrade your libraries immediately to fix the issues."
-
-                                // Đánh dấu build thất bại để khóa PR trên GitHub nhưng không ném Exception gây lặp log
-                                currentBuild.result = 'FAILURE'
-                                return
+                                // Ghi nhận module bị fail, tiếp tục scan module còn lại để tạo đủ reports
+                                snykFailedModules << module
                             } else {
                                 echo "ℹ️ [POLICY] Feature branch detected. This warning is non-blocking (Continue build). However, please fix these vulnerabilities before opening a PR."
                             }
@@ -1299,10 +1302,8 @@ def runSnykSecurityScanStage() {
                         case 2:
                             echo "🔥 [SNYK SYSTEM ERROR] Snyk CLI failed due to environment/network issues (e.g., Token expired, 403 Forbidden, rate limit)."
                             echo "👉 TIP: Check your SNYK_TOKEN credentials or run the command locally with 'snyk test -d' to view debug logs."
-
-                            // Đánh dấu lỗi hệ thống và dừng stage êm đẹp
-                            currentBuild.result = 'FAILURE'
-                            return
+                            // Lỗi hệ thống: không liên quan đến vulnerabilities, fail ngay
+                            error("❌ Snyk system error in module: ${module} (exit code 2). Check SNYK_TOKEN and network.")
 
                         case 3:
                             echo "ℹ️ [INFO] Snyk did not find any supported package manager files (e.g., package.json, pom.xml) to scan in ${module}. Skipping gracefully."
@@ -1310,9 +1311,13 @@ def runSnykSecurityScanStage() {
 
                         default:
                             echo "❌ [UNKNOWN ERROR] Snyk scan terminated with an unexpected status code: ${snykExitCode}. Please contact DevOps team."
-                            currentBuild.result = 'FAILURE'
-                            return
+                            error("❌ Snyk unknown exit code ${snykExitCode} in module: ${module}.")
                     }
+                }
+
+                // Sau khi scan xong tất cả modules, fail pipeline nếu có module vi phạm
+                if (snykFailedModules) {
+                    error("❌ Snyk security gate FAILED for PR targeting production. Vulnerable modules: ${snykFailedModules.join(', ')}. Fix all HIGH/CRITICAL issues before merging.")
                 }
             }
         } catch (Exception e) {
