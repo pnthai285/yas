@@ -41,7 +41,6 @@ pipeline {
         BRANCH_NAME        = "${env.BRANCH_NAME}"
         CHANGE_ID          = "${env.CHANGE_ID}"
         CHANGE_TARGET      = "${env.CHANGE_TARGET ?: 'main'}"
-        GIT_COMMIT_SHORT   = "unknown"
         
         // SonarCloud project keys mapping (đã tạo trên UI)
         PROJECT_KEYS = '''
