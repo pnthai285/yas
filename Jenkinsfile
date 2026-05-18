@@ -143,6 +143,7 @@ pipeline {
                             
                             try {
                                 checkout scm
+                                resolveCommitInfo()
                                 
                                 // Lấy AWS config với error handling
                                 env.ACCOUNT_ID = withAWS(region: 'us-east-1') {
@@ -698,6 +699,9 @@ def retryWithBackoff(int maxAttempts, int baseDelaySeconds, Closure closure) {
  * Run a stage with fail-fast for PR and continue-on-failure for branch builds.
  */
 def runStageOrWarn(String stageName, Closure body) {
+    if (this.binding?.hasVariable('buildErrors') == false) {
+        this.binding.setVariable('buildErrors', [])
+    }
     if (isPR) {
         body()
     } else {
@@ -1334,7 +1338,36 @@ def runSnykSecurityScanStage() {
     }
 }
 
+def resolveCommitInfo() {
+    def fullCommit = env.GIT_COMMIT?.trim()
+    if (!fullCommit) {
+        fullCommit = sh(
+            script: "git rev-parse HEAD 2>/dev/null || true",
+            returnStdout: true,
+            label: 'resolve-commit-full'
+        ).trim()
+    }
+    if (fullCommit) {
+        env.GIT_COMMIT = fullCommit
+    }
+
+    def shortCommit = env.GIT_COMMIT_SHORT?.trim()
+    if (!shortCommit || shortCommit == 'unknown' || !shortCommit.matches(/^[a-fA-F0-9]{7}$/)) {
+        shortCommit = sh(
+            script: "git rev-parse --short=7 HEAD 2>/dev/null || true",
+            returnStdout: true,
+            label: 'resolve-commit-short'
+        ).trim()
+    }
+    env.GIT_COMMIT_SHORT = (shortCommit?.matches(/^[a-fA-F0-9]{7}$/)) ? shortCommit.toLowerCase() : 'unknown'
+
+    if (env.GIT_COMMIT_SHORT == 'unknown') {
+        error "Cannot determine valid commit SHA for image tagging. Ensure checkout completed and git metadata is available."
+    }
+}
+
 def runBuildAndPushStage() {
+    resolveCommitInfo()
     def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
 
     modules.each { module ->
