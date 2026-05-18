@@ -39,7 +39,7 @@ pipeline {
         BRANCH_NAME        = "${env.BRANCH_NAME}"
         CHANGE_ID          = "${env.CHANGE_ID}"
         CHANGE_TARGET      = "${env.CHANGE_TARGET ?: 'main'}"
-        GIT_COMMIT_SHORT   = "${env.GIT_COMMIT?.take(7) ?: 'unknown'}"
+        GIT_COMMIT_SHORT   = "unknown"
         
         // SonarCloud project keys mapping (đã tạo trên UI)
         PROJECT_KEYS = '''
@@ -722,7 +722,15 @@ def runSmartRoutingStage() {
     maxInfraRetry = isPR ? 1 : 2
 
     try {
-        env.GIT_COMMIT_SHORT = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : 'unknown'
+        def computedCommit = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : ''
+        if (!computedCommit?.matches(/^[a-fA-F0-9]{7}$/)) {
+            computedCommit = sh(
+                script: "git rev-parse --short=7 HEAD 2>/dev/null || true",
+                returnStdout: true,
+                label: 'resolve-commit-short'
+            ).trim()
+        }
+        env.GIT_COMMIT_SHORT = (computedCommit?.matches(/^[a-fA-F0-9]{7}$/)) ? computedCommit.toLowerCase() : 'unknown'
         // rawBranchName giữ tên gốc (có '/') để dùng query GitHub API
         def rawBranchName = env.BRANCH_NAME?.trim()
             ?: env.CHANGE_BRANCH?.trim()
