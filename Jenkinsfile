@@ -39,7 +39,7 @@ pipeline {
         BRANCH_NAME        = "${env.BRANCH_NAME}"
         CHANGE_ID          = "${env.CHANGE_ID}"
         CHANGE_TARGET      = "${env.CHANGE_TARGET ?: 'main'}"
-        GIT_COMMIT_SHORT   = "${env.GIT_COMMIT ?: 'unknown'}"
+        GIT_COMMIT_SHORT   = "${env.GIT_COMMIT?.take(7) ?: 'unknown'}"
         
         // SonarCloud project keys mapping (đã tạo trên UI)
         PROJECT_KEYS = '''
@@ -160,7 +160,7 @@ pipeline {
                                         --output text
                                 """, returnStdout: true, label: 'get-hub-ip').trim()
                                 
-                                env.REGISTRY = "${env.HUB_IP}:5000"
+                                env.REGISTRY = sanitizeRegistry("${env.HUB_IP}:5000")
                                 
                                 echo "[INFO] Account ID: ${env.ACCOUNT_ID}"
                                 echo "[INFO] Cache bucket: ${env.CACHE_BUCKET}"
@@ -1336,15 +1336,20 @@ def runBuildAndPushStage() {
             return
         }
         
-        def immutableTag = "yas-${module}:${env.GIT_COMMIT_SHORT}"
-        echo "[BUILD][${module}] START: Building ${immutableTag}"
+        def commitSha = env.GIT_COMMIT_SHORT?.trim()?.toLowerCase()
+        def imageRefs = validateAndBuildImageRef(module, commitSha, env.BRANCH_NAME)
+        echo "[BUILD][${module}] START: Building ${imageRefs.immutable}"
         
         try {
             // ❌ KHÔNG retry docker build (lỗi code/Dockerfile → fail ngay)
             dir(module) {
                 sh """
                     echo "[BUILD][${module}] STEP: docker build"
-                    docker build -t ${env.REGISTRY}/${immutableTag} . --progress=plain
+                    docker build -t ${imageRefs.immutable} \\
+                      --label "org.opencontainers.image.revision=${env.GIT_COMMIT ?: ''}" \\
+                      --label "org.opencontainers.image.created=\$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \\
+                      --label "org.opencontainers.image.source=${env.BUILD_URL ?: ''}" \\
+                      --progress=plain .
                 """
             }
             
@@ -1353,17 +1358,58 @@ def runBuildAndPushStage() {
             retry(2) {
                 sh """
                     echo "[PUSH][${module}] STEP: docker push attempt"
-                    docker push ${env.REGISTRY}/${immutableTag}
+                    docker push ${imageRefs.immutable}
                 """
             }
             
+            def immutableDigest = sh(
+                script: "docker inspect ${imageRefs.immutable} --format='{{index .RepoDigests 0}}'",
+                returnStdout: true
+            ).trim()
+            
             // Mutable tag
-            def mutableTag = "yas-${module}:${env.BRANCH_NAME.replace('/', '-')}-${env.GIT_COMMIT_SHORT}"
-            sh """
-                docker tag ${env.REGISTRY}/${immutableTag} ${env.REGISTRY}/${mutableTag}
-                docker push ${env.REGISTRY}/${mutableTag}
-            """
-            echo "[BUILD][${module}] ✅ SUCCESS: Pushed ${immutableTag} & ${mutableTag}"
+            if (imageRefs.mutable) {
+                try {
+                    sh """
+                        docker tag ${imageRefs.immutable} ${imageRefs.mutable}
+                        docker push ${imageRefs.mutable}
+                    """
+                    echo "[BUILD][${module}] ✅ Mutable tag pushed: ${imageRefs.mutable}"
+                } catch (Exception e) {
+                    echo "[WARN][${module}] Mutable tag push failed: ${e.message}. Immutable tag is still valid."
+                }
+            }
+
+            // Optional: verify remote digest if skopeo is available
+            def hasSkopeo = sh(script: "command -v skopeo >/dev/null 2>&1", returnStatus: true) == 0
+            if (hasSkopeo) {
+                def remoteDigest = sh(
+                    script: "skopeo inspect docker://${imageRefs.immutable} --format '{{.Digest}}'",
+                    returnStdout: true,
+                    label: 'verify-remote-digest'
+                ).trim().replace('sha256:', '')
+                def localDigest = immutableDigest.replace('sha256:', '').split('@')[1]
+                if (remoteDigest != localDigest) {
+                    error "Digest mismatch! Local: ${localDigest}, Remote: ${remoteDigest}. Possible registry corruption."
+                }
+            } else {
+                echo "[WARN][${module}] skopeo not found; skipping remote digest verification."
+            }
+
+            def manifest = [
+                module: module,
+                commit: env.GIT_COMMIT,
+                branch: env.BRANCH_NAME,
+                immutableTag: imageRefs.immutable,
+                mutableTag: imageRefs.mutable,
+                digest: immutableDigest,
+                buildUrl: env.BUILD_URL,
+                timestamp: new Date().getTime()
+            ]
+            writeJSON file: "${module}/image-manifest.json", json: manifest
+            archiveArtifacts artifacts: "${module}/image-manifest.json", allowEmptyArchive: true
+
+            echo "[BUILD][${module}] ✅ SUCCESS: Pushed ${imageRefs.immutable}"
             
         } catch (Exception e) {
             echo "[BUILD][${module}] ❌ FAILED: ${e.message}"
@@ -1375,6 +1421,34 @@ def runBuildAndPushStage() {
 
     // Dọn disk sau build
     sh "docker image prune -f --filter 'until=24h' 2>/dev/null || true"
+}
+
+def sanitizeRegistry(String raw) {
+    def cleaned = raw?.trim()
+    if (!cleaned?.matches(/^[\w\.-]+:\d+$/)) {
+        error "Invalid registry format: ${raw}"
+    }
+    return cleaned
+}
+
+def validateAndBuildImageRef(String module, String commitSha, String branch = null) {
+    if (!commitSha?.matches(/^[a-f0-9]{7}$/)) {
+        error "Invalid commit SHA for tagging: ${commitSha}. Expected 7-char hex."
+    }
+
+    def registry = sanitizeRegistry(env.REGISTRY)
+    def immutableTag = "yas-${module}:${commitSha}"
+    def immutableRef = "${registry}/${immutableTag}"
+
+    def mutableRef = null
+    if (branch) {
+        def sanitizedBranch = branch.replaceAll('[^\\w\\.-]', '-').toLowerCase()
+        def mutableTag = "yas-${module}:${sanitizedBranch}-${commitSha}"
+        mutableRef = "${registry}/${mutableTag}"
+    }
+
+    echo "[TAG-VALIDATED] Immutable: ${immutableRef}${mutableRef ? ', Mutable: ' + mutableRef : ''}"
+    return [immutable: immutableRef, mutable: mutableRef]
 }
 
 def runSaveMavenCacheStage() {
