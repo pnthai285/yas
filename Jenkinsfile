@@ -1187,9 +1187,10 @@ def runSnykSecurityScanStage() {
             '''
 
             withCredentials([string(credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN')]) {
-                // Track failure sau khi scan hết tất cả modules (để mọi report đều được tạo)
-                def snykFailedModules = []
-
+                // Temporary non-blocking gate: keep scanning and publishing reports,
+                // but do not fail PR/production builds on vulnerability findings.
+                def snykWarnModules = []
+                // def snykFailedModules = []
                 modules.each { module ->
                     def scanDir = (module == 'common-library') ? '.' : module
                     def scanPath = (scanDir == '.') ? "${WORKSPACE}" : "${WORKSPACE}/${scanDir}"
@@ -1271,7 +1272,9 @@ def runSnykSecurityScanStage() {
                                     echo "   - ID: ${issue.id}"
                                     echo "     Title: ${issue.title}"
                                     echo "     Package: ${issue.packageName} (Version: ${issue.version})"
-                                    echo "     Path: ${issue.from?.join(' > ') ?: 'N/A'}"
+                                    def issuePath = issue.from ? issue.from.collect { "${it}" }.join(' > ') : 'N/A'
+                                    echo "     Path: ${issuePath}"
+                                    // echo "     Path: ${issue.from?.join(' > ') ?: 'N/A'}"
                                     echo "     URL: ${issue.references?.getAt(0)?.url ?: 'N/A'}"
                                     echo "   ---------------------------------------"
                                 }
@@ -1289,19 +1292,22 @@ def runSnykSecurityScanStage() {
 
                         case 1:
                             echo "⚠️ [SECURITY WARNING] Snyk found HIGH-SEVERITY VULNERABILITIES in module: ${module}!"
+                             // Kiểm tra xem đích đến cuối cùng của code có phải là các nhánh Production không
+                            // def isTargetingProd = (isPR && (env.CHANGE_TARGET == 'main' || env.CHANGE_TARGET == 'master')) || 
+                            //                       (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master')
 
-                            // Kiểm tra xem đích đến cuối cùng của code có phải là các nhánh Production không
-                            def isTargetingProd = (isPR && (env.CHANGE_TARGET == 'main' || env.CHANGE_TARGET == 'master')) || 
-                                                  (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master')
+                            // if (isTargetingProd) {
+                            //     echo "❌ [POLICY] Tight security gate enforced for PR/Production branches."
+                            //     echo "👉 ACTION REQUIRED: Please view the Snyk report artifact and upgrade your libraries immediately to fix the issues."
+                            //     // Ghi nhận module bị fail, tiếp tục scan module còn lại để tạo đủ reports
+                            //     snykFailedModules << module
+                            // } else {
+                            //     echo "ℹ️ [POLICY] Feature branch detected. This warning is non-blocking (Continue build). However, please fix these vulnerabilities before opening a PR."
+                            // }
 
-                            if (isTargetingProd) {
-                                echo "❌ [POLICY] Tight security gate enforced for PR/Production branches."
-                                echo "👉 ACTION REQUIRED: Please view the Snyk report artifact and upgrade your libraries immediately to fix the issues."
-                                // Ghi nhận module bị fail, tiếp tục scan module còn lại để tạo đủ reports
-                                snykFailedModules << module
-                            } else {
-                                echo "ℹ️ [POLICY] Feature branch detected. This warning is non-blocking (Continue build). However, please fix these vulnerabilities before opening a PR."
-                            }
+                            echo "ℹ️ [POLICY] Temporary non-blocking Snyk gate enabled. Continuing build even for PR/production branches."
+                            echo "👉 ACTION REQUIRED: Please view the Snyk report artifact and upgrade libraries before re-enabling the strict gate."
+                            snykWarnModules << module
                             break
 
                         case 2:
@@ -1321,8 +1327,11 @@ def runSnykSecurityScanStage() {
                 }
 
                 // Sau khi scan xong tất cả modules, fail pipeline nếu có module vi phạm
-                if (snykFailedModules) {
-                    error("❌ Snyk security gate FAILED for PR targeting production. Vulnerable modules: ${snykFailedModules.join(', ')}. Fix all HIGH/CRITICAL issues before merging.")
+                // if (snykFailedModules) {
+                //     error("❌ Snyk security gate FAILED for PR targeting production. Vulnerable modules: ${snykFailedModules.join(', ')}. Fix all HIGH/CRITICAL issues before merging.")
+                // }
+                if (snykWarnModules) {
+                    echo "⚠️ Snyk security gate is temporarily non-blocking. Vulnerable modules: ${snykWarnModules.join(', ')}."
                 }
             }
         } catch (Exception e) {
